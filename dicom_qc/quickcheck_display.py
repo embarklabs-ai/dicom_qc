@@ -213,10 +213,92 @@ class QuickCheckDisplayMixin:
                 </div>
             ''')
 
+        def get_filtered_series_list():
+            """Get list of (series, patient, study) tuples matching current filters."""
+            result = []
+            for patient_id, patient in sorted(self.patients.items()):
+                for study_key, study in sorted(patient.studies.items(), key=lambda x: x[1].date or ''):
+                    for series in sorted(study.series.values(), key=lambda s: self._series_num_sort_key(s.series_number)):
+                        if matches_filter(series, patient_id, study_key):
+                            result.append((series, patient, study))
+            return result
+
+        def navigate_series(direction):
+            """Navigate to prev (-1) or next (+1) series in filtered list."""
+            current = loaded_data['series']
+            if current is None:
+                return
+
+            filtered = get_filtered_series_list()
+            if not filtered:
+                return
+
+            # Find current index
+            current_idx = None
+            for i, (s, p, st) in enumerate(filtered):
+                if s is current:
+                    current_idx = i
+                    break
+
+            if current_idx is None:
+                return
+
+            # Calculate new index
+            new_idx = current_idx + direction
+            if new_idx < 0 or new_idx >= len(filtered):
+                return  # At boundary
+
+            # Save header settings before navigating
+            if loaded_data['header_viewer'] is not None:
+                loaded_data['header_settings'] = loaded_data['header_viewer'].get_settings()
+
+            # Navigate to new series
+            new_series, new_patient, new_study = filtered[new_idx]
+            update_selection(new_series)
+            scroll_to_card(new_series)
+
+            # Update loaded_data and re-render
+            loaded_data['series'] = new_series
+            loaded_data['patient'] = new_patient
+            loaded_data['study'] = new_study
+            dicom_files = new_series.files if new_series.files else []
+            if not dicom_files and new_series._file_paths:
+                dicom_files = [p for p in new_series._file_paths if p]
+            loaded_data['dicom_files'] = dicom_files
+            loaded_data['volume'] = None
+            loaded_data['image_loaded'] = False
+
+            # Re-render current view
+            if view_toggle.value == 'header':
+                render_header_view()
+            else:
+                render_image_view()
+
         def make_header_bar(series, patient, study):
             """Create unified header bar with series info and toggle."""
             style = STATUS_STYLES.get(series.qc_status, STATUS_STYLES['PENDING'])
             header_content = make_viewer_header(series, patient, study)
+
+            # Navigation buttons
+            prev_btn = widgets.Button(
+                description='',
+                icon='chevron-left',
+                button_style='',
+                tooltip='Previous series',
+                layout=widgets.Layout(width='32px', height='32px')
+            )
+            prev_btn.on_click(lambda _: navigate_series(-1))
+
+            next_btn = widgets.Button(
+                description='',
+                icon='chevron-right',
+                button_style='',
+                tooltip='Next series',
+                layout=widgets.Layout(width='32px', height='32px')
+            )
+            next_btn.on_click(lambda _: navigate_series(1))
+
+            nav_buttons = widgets.HBox([prev_btn, next_btn], layout=widgets.Layout(gap='4px'))
 
             # Close button
             close_btn = widgets.Button(
@@ -228,8 +310,14 @@ class QuickCheckDisplayMixin:
             )
             close_btn.on_click(lambda _: close_viewer())
 
+            # Group controls on the right so they don't move when content changes
+            controls = widgets.HBox(
+                [view_toggle, nav_buttons, close_btn],
+                layout=widgets.Layout(gap='8px', flex='0 0 auto', align_items='center')
+            )
+
             header_bar = widgets.HBox(
-                [header_content, view_toggle, close_btn],
+                [header_content, controls],
                 layout=widgets.Layout(
                     padding='12px 16px',
                     background=style['bg'],
