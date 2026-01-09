@@ -89,6 +89,25 @@ class QuickCheckDisplayMixin:
 
         # State tracking
         selected_series = [None]
+        # Store card widgets for selection updates without re-rendering
+        card_widgets = {}
+        # Hidden output widget for running scroll scripts
+        script_runner = widgets.Output(layout=widgets.Layout(height='0', overflow='hidden'))
+
+        def scroll_to_card(series):
+            """Scroll a card into view using JavaScript."""
+            from IPython.display import Javascript
+            if series is not None and id(series) in card_widgets:
+                card_id = f'qc-card-{id(series)}'
+                with script_runner:
+                    clear_output()
+                    display(Javascript(f'''
+                        setTimeout(function() {{
+                            var card = document.querySelector('.{card_id}');
+                            if (card) card.scrollIntoView({{behavior: 'auto', block: 'nearest'}});
+                        }}, 100);
+                    '''))
+
         # Store loaded data so we can switch views without reloading
         loaded_data = {
             'series': None,
@@ -117,6 +136,26 @@ class QuickCheckDisplayMixin:
             loaded_data['header_viewer'] = None
             with content_panel:
                 clear_output()
+
+        def update_selection(new_series):
+            """Update selection indicator without re-rendering the list."""
+            old_series = selected_series[0]
+
+            # Remove highlight from old selection
+            if old_series is not None and id(old_series) in card_widgets:
+                old_info = card_widgets[id(old_series)]
+                old_info['card'].layout.box_shadow = None
+                old_info['view_btn'].description = 'View'
+                old_info['view_btn'].button_style = 'info'
+
+            # Add highlight to new selection
+            selected_series[0] = new_series
+            if new_series is not None and id(new_series) in card_widgets:
+                new_info = card_widgets[id(new_series)]
+                border_color = new_info['border_color']
+                new_info['card'].layout.box_shadow = f'0 0 0 3px {border_color}'
+                new_info['view_btn'].description = '● View'
+                new_info['view_btn'].button_style = 'success'
 
         def render_header_view():
             """Render the header view in the content panel."""
@@ -434,6 +473,9 @@ class QuickCheckDisplayMixin:
 
         def render_list(_=None):
             """Render the vertical series list with buttons."""
+            # Clear card references since we're recreating them
+            card_widgets.clear()
+
             with list_area:
                 clear_output(wait=True)
 
@@ -519,13 +561,15 @@ class QuickCheckDisplayMixin:
                             )
 
                             def on_view_click(btn, s=series, p=patient, st=study):
+                                update_selection(s)
                                 hide_placeholder()
-                                selected_series[0] = s
+                                scroll_to_card(s)
                                 show_viewer(s, p, st)
 
                             def on_header_click(btn, s=series, p=patient, st=study):
+                                update_selection(s)
                                 hide_placeholder()
-                                selected_series[0] = s
+                                scroll_to_card(s)
                                 show_header(s, p, st)
 
                             view_btn.on_click(on_view_click)
@@ -558,9 +602,18 @@ class QuickCheckDisplayMixin:
                                     border_radius='8px',
                                     padding='12px',
                                     margin='0 0 10px 0',
+                                    box_shadow=f'0 0 0 3px {border_color}' if is_selected else None,
                                 )
                             )
                             card.add_class(card_id)
+
+                            # Store card reference for selection updates (use id() since SeriesInfo isn't hashable)
+                            card_widgets[id(series)] = {
+                                'card': card,
+                                'view_btn': view_btn,
+                                'border_color': border_color
+                            }
+
                             display(style_tag)
                             display(card)
 
@@ -589,13 +642,18 @@ class QuickCheckDisplayMixin:
             # Save header settings before closing
             if loaded_data['header_viewer'] is not None:
                 loaded_data['header_settings'] = loaded_data['header_viewer'].get_settings()
-            selected_series[0] = None
+            # Remember which card was selected before clearing
+            previously_selected = selected_series[0]
+            # Clear selection indicator
+            update_selection(None)
             # Hide right panel, expand left panel
             if panel_refs['right']:
                 panel_refs['right'].layout.display = 'none'
             if panel_refs['left']:
                 panel_refs['left'].layout.width = '100%'
                 panel_refs['left'].layout.flex = '1 1 auto'
+            # Scroll to keep the previously viewed card visible
+            scroll_to_card(previously_selected)
 
         # Wire up filter changes
         subject_dropdown.observe(update_session_options, names='value')
@@ -631,7 +689,7 @@ class QuickCheckDisplayMixin:
         header = widgets.VBox([summary_row, filter_box], layout=widgets.Layout(margin='0 0 12px 0', width='100%'))
 
         # Start with viewer closed (thumbnails full width)
-        left_panel = widgets.VBox([list_area], layout=widgets.Layout(width='100%', flex='1 1 auto'))
+        left_panel = widgets.VBox([list_area, script_runner], layout=widgets.Layout(width='100%', flex='1 1 auto'))
         right_panel = widgets.VBox([placeholder, toggle_container], layout=widgets.Layout(flex='1 1 auto', min_width='400px', display='none'))
 
         # Store panel references for close_viewer
