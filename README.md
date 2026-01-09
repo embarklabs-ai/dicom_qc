@@ -12,6 +12,11 @@ Batch quality control review of DICOM data within XNAT or on file system using J
 - Save/restore progress for large datasets
 - Detection of viewer compatibility issues (DTI, perfusion, derived series)
 
+## Limitations
+
+- **Not built to scale: tested up to 1,000 series**
+- Feedback welcome! Please submit an Issue.
+
 ## Installation
 
 ### For Local Use
