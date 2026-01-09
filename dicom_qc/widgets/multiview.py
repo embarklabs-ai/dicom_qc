@@ -762,11 +762,24 @@ class DicomHeaderViewer:
         if group_name not in self.TAG_GROUPS:
             return
 
-        # Find tags in this group that exist in current file
+        # Add all tags from the group (use keyword for matching even if not in current file)
         group_keywords = set(self.TAG_GROUPS[group_name])
+
+        # Build set of keywords already selected (to avoid duplicates)
+        existing_keywords = {kw for _, kw in self._selected_tags}
+
+        # First, add tags that exist in current file (with their tag_str)
+        found_keywords = set()
         for tag_str, keyword, display in self._all_tags:
-            if keyword in group_keywords and (tag_str, keyword) not in self._selected_tags:
+            if keyword in group_keywords and keyword not in existing_keywords:
                 self._selected_tags.append((tag_str, keyword))
+                found_keywords.add(keyword)
+                existing_keywords.add(keyword)
+
+        # Also add keywords not found in current file (for persistence across series)
+        for keyword in group_keywords - found_keywords:
+            if keyword not in existing_keywords:
+                self._selected_tags.append(('', keyword))
 
         self._quick_filter = None
         self._update_selected_tags_display()
@@ -803,11 +816,12 @@ class DicomHeaderViewer:
             chips = []
             for tag_str, keyword in self._selected_tags:
                 display = keyword if keyword else tag_str
+                tooltip_text = f'Click to remove {keyword or tag_str}'
                 chip = widgets.Button(
                     description=f'{display} ×',
                     button_style='',
                     layout=widgets.Layout(width='auto', height='24px', padding='0 8px'),
-                    tooltip=f'Click to remove {tag_str}'
+                    tooltip=tooltip_text
                 )
                 # Capture tag_str and keyword in closure
                 chip.on_click(lambda _, ts=tag_str, kw=keyword: self._remove_tag(ts, kw))
@@ -909,8 +923,9 @@ class DicomHeaderViewer:
 
         ds = self._dicom_dataset
 
-        # Build set of selected tag strings for quick lookup
-        selected_tag_strs = {tag_str for tag_str, _ in self._selected_tags}
+        # Build sets for quick lookup - match by tag_str OR keyword
+        selected_tag_strs = {tag_str for tag_str, _ in self._selected_tags if tag_str}
+        selected_keywords = {keyword for _, keyword in self._selected_tags if keyword}
 
         html_parts = []
         for elem in ds:
@@ -918,6 +933,7 @@ class DicomHeaderViewer:
                 continue
 
             tag_str = f'({elem.tag.group:04X},{elem.tag.element:04X})'
+            keyword = elem.keyword or ''
             show = False
 
             if self._quick_filter == 'all':
@@ -927,8 +943,8 @@ class DicomHeaderViewer:
             elif self._quick_filter == 'sequences':
                 show = elem.VR == 'SQ'
             elif self._selected_tags:
-                # Show only specifically selected tags
-                show = tag_str in selected_tag_strs
+                # Show only specifically selected tags (match by tag_str or keyword)
+                show = tag_str in selected_tag_strs or keyword in selected_keywords
             else:
                 show = True  # No filter = show all
 
