@@ -1,0 +1,24 @@
+# DICOM QC Tool Requirements
+
+# XNAT connectivity
+xnat>=0.4.0
+
+# DICOM file handling
+pydicom>=2.3.0
+
+# Numerical operations
+numpy>=1.20.0
+
+# Visualization and animation
+matplotlib>=3.5.0
+pillow>=9.0.0
+ipympl>=0.9.0  # Interactive matplotlib in Jupyter (click to navigate)
+
+# Interactive Jupyter widgets
+ipywidgets>=8.0.0
+
+# HTML template rendering
+jinja2>=3.0.0
+
+# IPython for display
+ipython>=7.0.0

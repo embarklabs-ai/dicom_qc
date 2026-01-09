@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dicom_qc"
+version = "0.1.0"
+description = "DICOM QC Review Tool for post-deidentification quality checks"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+    "pydicom>=2.3.0",
+    "numpy>=1.20.0",
+    "matplotlib>=3.5.0",
+    "pillow>=9.0.0",
+    "ipywidgets>=8.0.0",
+    "ipympl>=0.9.0",
+    "jinja2>=3.0.0",
+    "ipython>=7.0.0",
+    "jupyter>=1.0.0",
+    "notebook>=7.0.0",
+    "SimpleITK>=2.2.0",
+    # JPEG-2000 and other codec support
+    "pylibjpeg-openjpeg>=2.5.0",
+    "imagecodecs>=2024.12.30",
+    "glymur>=0.14.0.post1",
+]
+
+[project.optional-dependencies]
+xnat = [
+    "xnat>=0.4.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "black",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dicom_qc*"]
+
+[tool.setuptools.package-data]
+dicom_qc = ["reports/templates/*.html"]

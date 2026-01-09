@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DICOM QC Report - {{ session_info.experiment_id }}</title>
+    <style>
+        :root {
+            --pass-color: #28a745;
+            --fail-color: #dc3545;
+            --flag-color: #ffc107;
+            --pending-color: #6c757d;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+            color: #333;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #343a40, #495057);
+            color: white;
+            padding: 25px;
+            border-radius: 8px;
+            margin-bottom: 25px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            margin: 0 0 10px 0;
+            font-size: 1.8em;
+        }
+
+        .header-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            font-size: 0.95em;
+            opacity: 0.9;
+        }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .summary-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+            transition: transform 0.2s;
+        }
+
+        .summary-card:hover {
+            transform: translateY(-2px);
+        }
+
+        .summary-card.pass { border-top: 4px solid var(--pass-color); }
+        .summary-card.fail { border-top: 4px solid var(--fail-color); }
+        .summary-card.flag { border-top: 4px solid var(--flag-color); }
+        .summary-card.total { border-top: 4px solid #007bff; }
+
+        .summary-number {
+            font-size: 2.5em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .summary-label {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .scan-section {
+            background: white;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+        }
+
+        .scan-header {
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .scan-header.pass { background: #d4edda; }
+        .scan-header.fail { background: #f8d7da; }
+        .scan-header.flag { background: #fff3cd; }
+        .scan-header.skip { background: #e9ecef; }
+
+        .scan-title {
+            margin: 0;
+            font-size: 1.1em;
+        }
+
+        .scan-meta {
+            font-size: 0.85em;
+            color: #666;
+            margin-top: 3px;
+        }
+
+        .status-badge {
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            color: white;
+            font-size: 0.9em;
+        }
+
+        .status-badge.pass { background: var(--pass-color); }
+        .status-badge.fail { background: var(--fail-color); }
+        .status-badge.flag { background: var(--flag-color); }
+        .status-badge.skip { background: var(--pending-color); }
+
+        .scan-content {
+            padding: 20px;
+            border-top: 1px solid #eee;
+        }
+
+        .section-title {
+            font-size: 1em;
+            font-weight: 600;
+            margin: 0 0 15px 0;
+            color: #495057;
+        }
+
+        .qc-checks {
+            margin-bottom: 25px;
+        }
+
+        .qc-check {
+            display: flex;
+            align-items: flex-start;
+            padding: 10px 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .qc-check:last-child {
+            border-bottom: none;
+        }
+
+        .qc-check-status {
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            margin-right: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+
+        .qc-check-status.pass { background: var(--pass-color); }
+        .qc-check-status.fail { background: var(--fail-color); }
+        .qc-check-status.warning { background: var(--flag-color); }
+
+        .qc-check-content {
+            flex: 1;
+        }
+
+        .qc-check-name {
+            font-weight: 600;
+            margin-bottom: 2px;
+        }
+
+        .qc-check-message {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .image-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+            align-items: start;
+        }
+
+        @media (max-width: 800px) {
+            .image-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .image-container {
+            text-align: center;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid #ddd;
+        }
+
+        .image-container img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+        }
+
+        .image-label {
+            background: #f8f9fa;
+            padding: 8px;
+            font-size: 0.85em;
+            color: #666;
+        }
+
+        .animation-container {
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .animation-container img {
+            max-width: 500px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+        }
+
+        .ohif-button {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            margin: 15px 0;
+            transition: background 0.2s;
+        }
+
+        .ohif-button:hover {
+            background: #0056b3;
+        }
+
+        .notes-section {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 15px;
+        }
+
+        .notes-section h4 {
+            margin: 0 0 10px 0;
+            font-size: 0.95em;
+        }
+
+        .issues-list {
+            margin: 0 0 10px 0;
+            padding-left: 20px;
+        }
+
+        .issues-list li {
+            margin: 3px 0;
+            color: #856404;
+        }
+
+        .notes-text {
+            margin: 0;
+            white-space: pre-wrap;
+            font-size: 0.9em;
+        }
+
+        .footer {
+            text-align: center;
+            color: #6c757d;
+            margin-top: 40px;
+            padding: 20px;
+            font-size: 0.85em;
+        }
+
+        /* Print styles */
+        @media print {
+            body {
+                background: white;
+            }
+
+            .scan-section {
+                break-inside: avoid;
+            }
+
+            .ohif-button {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>DICOM QC Report</h1>
+        <div class="header-info">
+            <div><strong>Project:</strong> {{ session_info.project }}</div>
+            <div><strong>Subject:</strong> {{ session_info.subject }}</div>
+            <div><strong>Session:</strong> {{ session_info.experiment_id }}</div>
+            <div><strong>Generated:</strong> {{ generated_at }}</div>
+        </div>
+    </div>
+
+    <!-- Summary Section -->
+    <div class="summary-grid">
+        <div class="summary-card total">
+            <div class="summary-number">{{ summary.total }}</div>
+            <div class="summary-label">Total Scans</div>
+        </div>
+        <div class="summary-card pass">
+            <div class="summary-number" style="color: var(--pass-color);">{{ summary.passed }}</div>
+            <div class="summary-label">Passed</div>
+        </div>
+        <div class="summary-card fail">
+            <div class="summary-number" style="color: var(--fail-color);">{{ summary.failed }}</div>
+            <div class="summary-label">Failed</div>
+        </div>
+        <div class="summary-card flag">
+            <div class="summary-number" style="color: var(--flag-color);">{{ summary.flagged }}</div>
+            <div class="summary-label">Flagged</div>
+        </div>
+    </div>
+
+    <!-- Scan Results -->
+    {% for scan in scan_results %}
+    <div class="scan-section">
+        <div class="scan-header {{ scan.decision|lower }}">
+            <div>
+                <h2 class="scan-title">{{ scan.scan_id }} - {{ scan.description }}</h2>
+                <div class="scan-meta">
+                    {{ scan.modality }} | {{ scan.num_slices }} slices |
+                    {{ scan.pixel_spacing[0]|round(2) }} x {{ scan.pixel_spacing[1]|round(2) }} mm
+                </div>
+            </div>
+            <span class="status-badge {{ scan.decision|lower }}">{{ scan.decision }}</span>
+        </div>
+
+        <div class="scan-content">
+            <!-- QC Check Results -->
+            <div class="qc-checks">
+                <h3 class="section-title">Geometry QC Checks</h3>
+                {% for check in scan.qc_checks %}
+                <div class="qc-check">
+                    <div class="qc-check-status {{ check.status|lower }}">
+                        {% if check.status == 'PASS' %}&#10003;{% elif check.status == 'FAIL' %}&#10007;{% else %}!{% endif %}
+                    </div>
+                    <div class="qc-check-content">
+                        <div class="qc-check-name">{{ check.check_name }}</div>
+                        <div class="qc-check-message">{{ check.message }}</div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+
+            <!-- Images -->
+            <h3 class="section-title">Orientation Overview</h3>
+            <div class="image-grid">
+                {% if scan.axial_image %}
+                <div class="image-container">
+                    <img src="data:image/png;base64,{{ scan.axial_image }}" alt="Axial View">
+                    <div class="image-label">Axial (Center Slice)</div>
+                </div>
+                {% endif %}
+                {% if scan.coronal_image %}
+                <div class="image-container">
+                    <img src="data:image/png;base64,{{ scan.coronal_image }}" alt="Coronal View">
+                    <div class="image-label">Coronal (Center Slice)</div>
+                </div>
+                {% endif %}
+                {% if scan.sagittal_image %}
+                <div class="image-container">
+                    <img src="data:image/png;base64,{{ scan.sagittal_image }}" alt="Sagittal View">
+                    <div class="image-label">Sagittal (Center Slice)</div>
+                </div>
+                {% endif %}
+                {% if scan.mip_image %}
+                <div class="image-container">
+                    <img src="data:image/png;base64,{{ scan.mip_image }}" alt="MIP">
+                    <div class="image-label">Maximum Intensity Projection</div>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Animation (if included) -->
+            {% if scan.animation_gif %}
+            <div class="animation-container">
+                <h3 class="section-title">Slice Animation</h3>
+                <img src="data:image/gif;base64,{{ scan.animation_gif }}" alt="Slice Animation">
+            </div>
+            {% endif %}
+
+            <!-- OHIF Link -->
+            {% if scan.ohif_url %}
+            <a href="{{ scan.ohif_url }}" target="_blank" class="ohif-button">
+                View in OHIF Viewer
+            </a>
+            {% endif %}
+
+            <!-- Reviewer Notes -->
+            {% if scan.notes or scan.issues %}
+            <div class="notes-section">
+                <h4>Reviewer Notes</h4>
+                {% if scan.issues %}
+                <ul class="issues-list">
+                    {% for issue in scan.issues %}
+                    <li>{{ issue }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+                {% if scan.notes %}
+                <p class="notes-text">{{ scan.notes }}</p>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+
+    <div class="footer">
+        <p>DICOM QC Report v{{ report_version }} | Generated by DICOM QC Tool</p>
+        <p>
+            Pass Rate: {{ summary.pass_rate }}% |
+            Review completed: {{ generated_at }}
+        </p>
+    </div>
+</body>
+</html>
