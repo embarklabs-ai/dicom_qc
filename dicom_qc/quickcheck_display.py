@@ -350,7 +350,8 @@ class QuickCheckDisplayMixin:
         def show_header(series, patient=None, study=None):
             """Show DICOM header viewer for selected series."""
             # If switching series, clear everything
-            if loaded_data['series'] is None or loaded_data['series'].uid != series.uid:
+            # Use object identity since uid may be empty in XNAT mode
+            if loaded_data['series'] is None or loaded_data['series'] is not series:
                 clear_content()
                 loaded_data['series'] = series
                 loaded_data['patient'] = patient
@@ -368,7 +369,8 @@ class QuickCheckDisplayMixin:
         def show_viewer(series, patient=None, study=None):
             """Show viewer for selected series (View button)."""
             # If switching series, clear everything
-            if loaded_data['series'] is None or loaded_data['series'].uid != series.uid:
+            # Use object identity since uid may be empty in XNAT mode
+            if loaded_data['series'] is None or loaded_data['series'] is not series:
                 clear_content()
                 loaded_data['series'] = series
                 loaded_data['patient'] = patient
