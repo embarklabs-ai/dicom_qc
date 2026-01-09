@@ -36,6 +36,9 @@ uv.lock
 # Jupyter
 .ipynb_checkpoints/
 
+# Ignore dev notebooks not already tracked
+examples/*-dev.ipynb 
+
 # Testing
 .pytest_cache/
 .coverage
