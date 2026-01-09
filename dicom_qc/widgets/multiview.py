@@ -588,6 +588,26 @@ class MultiViewViewer(VolumeRenderer):
         self.window_center_slider.value = center
         self.window_width_slider.value = width
 
+    def close(self):
+        """Close the viewer and release matplotlib resources."""
+        if self._fig is not None:
+            # Disconnect event handlers
+            if self._click_cid is not None:
+                self._fig.canvas.mpl_disconnect(self._click_cid)
+                self._click_cid = None
+            if self._scroll_cid is not None:
+                self._fig.canvas.mpl_disconnect(self._scroll_cid)
+                self._scroll_cid = None
+            # Close the figure
+            plt.close(self._fig)
+            self._fig = None
+            self._axes = None
+        # Clear image references
+        self._images.clear()
+        self._hlines.clear()
+        self._vlines.clear()
+        self._titles.clear()
+
 
 class DicomHeaderViewer:
     """Standalone DICOM header viewer widget - no pixel data loading required."""

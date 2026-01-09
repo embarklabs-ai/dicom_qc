@@ -119,6 +119,7 @@ class QuickCheckDisplayMixin:
             'header_loaded': False,
             'header_viewer': None,  # Reference to current header viewer
             'header_settings': None,  # Persisted header viewer settings
+            'image_viewer': None,  # Reference to current image viewer (for cleanup)
         }
 
         def clear_content():
@@ -126,6 +127,9 @@ class QuickCheckDisplayMixin:
             # Save header settings before clearing
             if loaded_data['header_viewer'] is not None:
                 loaded_data['header_settings'] = loaded_data['header_viewer'].get_settings()
+            # Close image viewer to release matplotlib resources
+            if loaded_data['image_viewer'] is not None:
+                loaded_data['image_viewer'].close()
             loaded_data['series'] = None
             loaded_data['patient'] = None
             loaded_data['study'] = None
@@ -134,6 +138,7 @@ class QuickCheckDisplayMixin:
             loaded_data['image_loaded'] = False
             loaded_data['header_loaded'] = False
             loaded_data['header_viewer'] = None
+            loaded_data['image_viewer'] = None
             with content_panel:
                 clear_output()
 
@@ -353,6 +358,11 @@ class QuickCheckDisplayMixin:
             dicom_files = loaded_data['dicom_files']
             volume = loaded_data['volume']
 
+            # Close previous image viewer to release matplotlib resources
+            if loaded_data['image_viewer'] is not None:
+                loaded_data['image_viewer'].close()
+                loaded_data['image_viewer'] = None
+
             with content_panel:
                 clear_output(wait=True)
 
@@ -403,7 +413,9 @@ class QuickCheckDisplayMixin:
                 '''))
 
                 # Show the viewer
-                MultiViewViewer(volume, dicom_files=dicom_files, show_title=False).display()
+                viewer = MultiViewViewer(volume, dicom_files=dicom_files, show_title=False)
+                loaded_data['image_viewer'] = viewer
+                viewer.display()
 
         def load_images():
             """Load DICOM images for the current series."""
