@@ -57,7 +57,7 @@ class QuickCheckDisplayMixin:
 
         # === Left panel: scrollable list with buttons ===
         list_area = widgets.Output(layout=widgets.Layout(
-            height='750px',
+            height='80vh',
             width='98%',
             overflow_y='auto',
             background='#fafafa'
@@ -66,7 +66,7 @@ class QuickCheckDisplayMixin:
 
         # === Right panel: single content area with toggle ===
         content_panel = widgets.Output(layout=widgets.Layout(
-            min_height='700px',
+            min_height='80vh',
             overflow='auto',
             border='1px solid #e2e8f0',
             border_radius='6px',
@@ -84,7 +84,7 @@ class QuickCheckDisplayMixin:
         # Container for content (toggle is rendered inside by the render functions)
         toggle_container = widgets.VBox(
             [content_panel],
-            layout=widgets.Layout(width='100%', min_height='750px')
+            layout=widgets.Layout(width='100%', min_height='80vh')
         )
 
         # State tracking
