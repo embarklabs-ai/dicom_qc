@@ -58,10 +58,11 @@ class QuickCheckDisplayMixin:
         # === Left panel: scrollable list with buttons ===
         list_area = widgets.Output(layout=widgets.Layout(
             height='750px',
+            width='98%',
             overflow_y='auto',
-            overflow_x='hidden',
             background='#fafafa'
         ))
+        list_area.add_class('qc-list-area')
 
         # === Right panel: single content area with toggle ===
         content_panel = widgets.Output(layout=widgets.Layout(
@@ -177,8 +178,19 @@ class QuickCheckDisplayMixin:
             """Create unified header bar with series info and toggle."""
             style = STATUS_STYLES.get(series.qc_status, STATUS_STYLES['PENDING'])
             header_content = make_viewer_header(series, patient, study)
+
+            # Close button
+            close_btn = widgets.Button(
+                description='',
+                icon='times',
+                button_style='',
+                tooltip='Close viewer',
+                layout=widgets.Layout(width='32px', height='32px')
+            )
+            close_btn.on_click(lambda _: close_viewer())
+
             header_bar = widgets.HBox(
-                [header_content, view_toggle],
+                [header_content, view_toggle, close_btn],
                 layout=widgets.Layout(
                     padding='12px 16px',
                     background=style['bg'],
@@ -425,6 +437,12 @@ class QuickCheckDisplayMixin:
             with list_area:
                 clear_output(wait=True)
 
+                # Global CSS for list area
+                display(widgets.HTML('''<style>
+                    .qc-list-area, .qc-list-area * { box-sizing: border-box; }
+                    .qc-list-area img { max-width: 100%; height: auto; }
+                </style>'''))
+
                 for patient_id, patient in sorted(self.patients.items()):
                     # Check if patient has any matching series
                     patient_has_match = any(
@@ -447,16 +465,16 @@ class QuickCheckDisplayMixin:
                             card_bg = style['bg']
                             border_color = style['border']
 
-                            # Thumbnail - max-width prevents horizontal scroll
+                            # Thumbnail - use percentage width so cards resize with panel
                             has_issues = series.qc_status in ('FAIL', 'WARNING', 'NOTE') and series.qc_report
                             if series.thumbnail:
-                                img = f'<img src="data:image/png;base64,{series.thumbnail}" style="width:100%;max-width:320px;display:block;border-radius:6px;">'
+                                img = f'<img src="data:image/png;base64,{series.thumbnail}" style="width:100%;max-width:100%;display:block;border-radius:6px;">'
                             elif series.is_derived:
-                                img = f'<div style="height:60px;max-width:320px;background:linear-gradient(135deg,#4c1d95,#7c3aed);color:white;display:flex;align-items:center;justify-content:center;font-size:13px;border-radius:6px;font-weight:500;">{series.modality}</div>'
+                                img = f'<div style="height:60px;width:100%;background:linear-gradient(135deg,#4c1d95,#7c3aed);color:white;display:flex;align-items:center;justify-content:center;font-size:13px;border-radius:6px;font-weight:500;">{series.modality}</div>'
                             elif series.error:
-                                img = f'<div style="height:60px;max-width:320px;background:#fee2e2;color:#991b1b;display:flex;align-items:center;justify-content:center;font-size:10px;padding:8px;text-align:center;border-radius:6px;">{series.error[:35]}...</div>'
+                                img = f'<div style="height:60px;width:100%;background:#fee2e2;color:#991b1b;display:flex;align-items:center;justify-content:center;font-size:10px;padding:8px;text-align:center;border-radius:6px;box-sizing:border-box;">{series.error[:35]}...</div>'
                             else:
-                                img = f'<div style="height:60px;max-width:320px;background:#e5e7eb;color:#6b7280;display:flex;align-items:center;justify-content:center;border-radius:6px;font-size:12px;">No preview</div>'
+                                img = f'<div style="height:60px;width:100%;background:#e5e7eb;color:#6b7280;display:flex;align-items:center;justify-content:center;border-radius:6px;font-size:12px;">No preview</div>'
 
                             # Issue list
                             issue_html = ''
@@ -464,37 +482,40 @@ class QuickCheckDisplayMixin:
                                 issues = [r for r in series.qc_report.results if r.status in ('FAIL', 'WARNING', 'NOTE')]
                                 if issues:
                                     issue_list = ', '.join(r.check_name for r in issues)
-                                    issue_html = f'<div style="margin-top:8px;padding:6px 10px;font-size:11px;color:{style["text"]};background:rgba(0,0,0,0.04);border-radius:4px;max-width:320px;word-wrap:break-word;">{issue_list}</div>'
+                                    issue_html = f'<div style="margin-top:8px;padding:6px 10px;font-size:11px;color:{style["text"]};background:rgba(0,0,0,0.04);border-radius:4px;word-wrap:break-word;">{issue_list}</div>'
 
                             # Badge colors
                             badge_bg = border_color
                             badge_text = '#fff' if series.qc_status != 'WARNING' else '#78350f'
 
                             # Build complete card HTML - status badge floats top-right
-                            card_content = widgets.HTML(f'''
-                                <div style="position:relative;overflow:hidden;max-width:320px;">
+                            card_content = widgets.HTML(
+                                f'''
+                                <div style="position:relative;width:100%;box-sizing:border-box;">
                                     <span style="position:absolute;top:0;right:0;background:{badge_bg};color:{badge_text};padding:4px 10px;border-radius:4px;font-size:10px;font-weight:600;">{series.qc_status}</span>
-                                    <div style="margin-bottom:10px;padding-right:75px;">
-                                        <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Subject</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{patient.label}</span></div>
-                                        <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Session</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{study.label}</span></div>
-                                        <div style="display:flex;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Series</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{series.label}</span></div>
+                                    <div style="margin-bottom:10px;padding-right:75px;box-sizing:border-box;">
+                                        <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Subject</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{patient.label}</span></div>
+                                        <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Session</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{study.label}</span></div>
+                                        <div style="display:flex;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Series</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{series.label}</span></div>
                                     </div>
+                                    {img}
+                                    {issue_html}
                                 </div>
-                                {img}
-                                {issue_html}
-                            ''')
+                                ''',
+                                layout=widgets.Layout(width='98%', min_width='0')
+                            )
 
                             # Buttons
                             view_btn = widgets.Button(
                                 description='● View' if is_selected else 'View',
                                 button_style='success' if is_selected else 'info',
-                                layout=widgets.Layout(flex='1', height='32px', max_width='160px')
+                                layout=widgets.Layout(flex='1', height='32px', min_width='0')
                             )
 
                             tags_btn = widgets.Button(
                                 description='Tags',
                                 button_style='',
-                                layout=widgets.Layout(flex='1', height='32px', max_width='160px')
+                                layout=widgets.Layout(flex='1', height='32px', min_width='0')
                             )
 
                             def on_view_click(btn, s=series, p=patient, st=study):
@@ -512,13 +533,21 @@ class QuickCheckDisplayMixin:
 
                             button_row = widgets.HBox(
                                 [view_btn, tags_btn],
-                                layout=widgets.Layout(margin='10px 0 0 0', gap='8px')
+                                layout=widgets.Layout(margin='10px 0 0 0', gap='8px', width='100%')
                             )
 
                             # Complete card with background via CSS injection
                             card_id = f'qc-card-{id(series)}'
                             style_tag = widgets.HTML(f'''<style>
-                                .{card_id} {{ background: {card_bg} !important; border-radius: 8px; }}
+                                .{card_id} {{
+                                    background: {card_bg} !important;
+                                    border-radius: 8px;
+                                    box-sizing: border-box !important;
+                                    max-width: 100% !important;
+                                }}
+                                .{card_id} * {{ box-sizing: border-box; }}
+                                .{card_id} img {{ max-width: 100%; height: auto; display: block; }}
+                                .{card_id} .widget-html-content {{ width: 100%; }}
                             </style>''')
 
                             card = widgets.VBox(
@@ -541,10 +570,32 @@ class QuickCheckDisplayMixin:
         )
         toggle_container.layout.display = 'none'  # Hide container initially
 
+        # Panel references (will be set after panel creation)
+        panel_refs = {'left': None, 'right': None}
+
         def hide_placeholder():
-            """Hide placeholder when content is shown."""
+            """Hide placeholder and show viewer when content is shown."""
             placeholder.layout.display = 'none'
             toggle_container.layout.display = 'flex'
+            # Show right panel, constrain left panel
+            if panel_refs['right']:
+                panel_refs['right'].layout.display = 'flex'
+            if panel_refs['left']:
+                panel_refs['left'].layout.width = '365px'
+                panel_refs['left'].layout.flex = '0 0 auto'
+
+        def close_viewer():
+            """Close the viewer and expand thumbnail list to full width."""
+            # Save header settings before closing
+            if loaded_data['header_viewer'] is not None:
+                loaded_data['header_settings'] = loaded_data['header_viewer'].get_settings()
+            selected_series[0] = None
+            # Hide right panel, expand left panel
+            if panel_refs['right']:
+                panel_refs['right'].layout.display = 'none'
+            if panel_refs['left']:
+                panel_refs['left'].layout.width = '100%'
+                panel_refs['left'].layout.flex = '1 1 auto'
 
         # Wire up filter changes
         subject_dropdown.observe(update_session_options, names='value')
@@ -577,14 +628,19 @@ class QuickCheckDisplayMixin:
             description_filter,
         ], layout=widgets.Layout(align_items='center', gap='12px', flex_wrap='wrap'))
 
-        header = widgets.VBox([summary_row, filter_box], layout=widgets.Layout(margin='0 0 12px 0'))
+        header = widgets.VBox([summary_row, filter_box], layout=widgets.Layout(margin='0 0 12px 0', width='100%'))
 
-        left_panel = widgets.VBox([list_area], layout=widgets.Layout(width='365px', flex='0 0 auto'))
-        right_panel = widgets.VBox([placeholder, toggle_container], layout=widgets.Layout(flex='1 1 auto', min_width='400px'))
+        # Start with viewer closed (thumbnails full width)
+        left_panel = widgets.VBox([list_area], layout=widgets.Layout(width='100%', flex='1 1 auto'))
+        right_panel = widgets.VBox([placeholder, toggle_container], layout=widgets.Layout(flex='1 1 auto', min_width='400px', display='none'))
+
+        # Store panel references for close_viewer
+        panel_refs['left'] = left_panel
+        panel_refs['right'] = right_panel
 
         main_layout = widgets.HBox([left_panel, right_panel], layout=widgets.Layout(width='100%'))
 
-        display(widgets.VBox([header, main_layout]))
+        display(widgets.VBox([header, main_layout], layout=widgets.Layout(width='100%')))
 
     def display_grid(self, filter_status: Optional[str] = None):
         """Display thumbnail grid in Jupyter notebook (simple HTML version)."""
