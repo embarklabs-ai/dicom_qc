@@ -31,10 +31,18 @@ Batch quality control review of DICOM data within XNAT or on file system using J
 </tr>
 </table>
 
-## Limitations
+## Scaling
 
-- **Not built to scale: tested up to 1,000 series**
-- Feedback welcome! Please submit an Issue.
+Tested up to 100K series with:
+- SQLite database for fast filtering/pagination
+- Disk-cached thumbnails (~10KB each vs base64 in memory)
+- Parallel processing with auto-save
+
+Storage in `{data_dir}/_dicom_qc/` (database, thumbnails, state).
+
+## Feedback
+
+Please submit an Issue!
 
 ## Installation
 

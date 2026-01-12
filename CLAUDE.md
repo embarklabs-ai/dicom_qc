@@ -46,9 +46,11 @@ Main entry point for batch review:
 ```python
 qc = QuickCheck(data_dir)
 qc.discover()           # Scan for DICOM files, build hierarchy
-qc.process_all()        # Run QC checks, generate thumbnails
+qc.process_all()        # Run QC checks (parallel, auto-save)
 qc.generate_html_report(path)  # Export HTML report
-qc.display()            # Interactive Jupyter dashboard
+qc.display()            # Interactive Jupyter dashboard (paginated)
+qc.save()               # Save state (auto-saves during processing)
+qc.reset()              # Clear everything and start fresh
 ```
 
 ### DicomVolume (core/volume.py)
@@ -165,4 +167,28 @@ jupyter notebook examples/local.ipynb
 
 - DICOM files: `*.dcm` in data directory
 - HTML reports: `*_report.html` in output directory
-- Thumbnails: Base64-encoded PNG in memory (not saved to disk)
+- Save files: `quickcheck_state.pkl` (pickle format)
+
+## Storage (Scaled Mode)
+
+For large projects, QuickCheck uses disk-based storage in `{data_dir}/_dicom_qc/`:
+
+```
+_dicom_qc/
+├── qc_database.sqlite3   # SQLite database (series metadata, QC results)
+├── thumbnails/           # JPEG thumbnails (~10KB each)
+│   ├── ab/
+│   │   └── abc123def456.jpg
+│   └── cd/
+│       └── cde789ghi012.jpg
+```
+
+**Benefits at scale:**
+- Memory: ~50MB vs 1-5GB for 100K series (thumbnails on disk, not base64 in memory)
+- UI: <500ms filter/pagination vs 30-60s full re-render
+- Processing: Parallel with auto-save (resume on crash)
+
+**To start fresh:**
+```python
+qc.reset()  # Deletes _dicom_qc/ directory and clears state
+```

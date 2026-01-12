@@ -6,6 +6,8 @@ from typing import Optional
 class QuickCheckDisplayMixin:
     """Mixin providing interactive Jupyter display methods for QuickCheck."""
 
+    PAGE_SIZE = 50  # Series per page in paginated mode
+
     @staticmethod
     def _series_num_sort_key(n):
         """Sort key that puts numeric values first, then strings."""
@@ -14,12 +16,46 @@ class QuickCheckDisplayMixin:
         except (ValueError, TypeError):
             return (1, str(n or ''))
 
-    def display(self):
-        """Display interactive review interface with vertical list and side viewer."""
+    def _get_thumbnail_for_display(self, series) -> Optional[str]:
+        """Get thumbnail base64 string for display, loading from disk cache if needed.
+
+        Args:
+            series: SeriesInfo object
+
+        Returns:
+            Base64-encoded image string or None
+        """
+        # Prefer base64 in memory (legacy)
+        if series.thumbnail:
+            return series.thumbnail
+
+        # Load from disk cache
+        if series._thumbnail_path and hasattr(self, '_thumb_cache') and self._thumb_cache:
+            return self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
+
+        return None
+
+    def display(self, use_pagination: bool = None):
+        """Display interactive review interface with vertical list and side viewer.
+
+        Args:
+            use_pagination: If True, use paginated view (better for >500 series).
+                           If None, auto-select based on series count and DB availability.
+        """
         import ipywidgets as widgets
         from IPython.display import display, clear_output
 
         all_series = self.get_all_series()
+
+        # Auto-select pagination for large datasets with DB backend
+        if use_pagination is None:
+            has_db = hasattr(self, '_db') and self._db is not None
+            use_pagination = has_db and len(all_series) > 500
+
+        if use_pagination:
+            return self._display_paginated()
+
+        # Continue with legacy display for smaller datasets
         counts = self.get_summary()
         c = self.STATUS_COLORS
 
@@ -609,8 +645,9 @@ class QuickCheckDisplayMixin:
 
                             # Thumbnail - use percentage width so cards resize with panel
                             has_issues = series.qc_status in ('FAIL', 'WARNING', 'NOTE') and series.qc_report
-                            if series.thumbnail:
-                                img = f'<img src="data:image/png;base64,{series.thumbnail}" style="width:100%;max-width:100%;display:block;border-radius:6px;">'
+                            thumbnail_b64 = self._get_thumbnail_for_display(series)
+                            if thumbnail_b64:
+                                img = f'<img src="data:image/jpeg;base64,{thumbnail_b64}" style="width:100%;max-width:100%;display:block;border-radius:6px;">'
                             elif series.is_derived:
                                 img = f'<div style="height:60px;width:100%;background:linear-gradient(135deg,#4c1d95,#7c3aed);color:white;display:flex;align-items:center;justify-content:center;font-size:13px;border-radius:6px;font-weight:500;">{series.modality}</div>'
                             elif series.error:
@@ -797,6 +834,315 @@ class QuickCheckDisplayMixin:
         panel_refs['right'] = right_panel
 
         main_layout = widgets.HBox([left_panel, right_panel], layout=widgets.Layout(width='100%'))
+
+        display(widgets.VBox([header, main_layout], layout=widgets.Layout(width='100%')))
+
+    def _display_paginated(self):
+        """Display paginated review interface for large datasets (>500 series).
+
+        Uses database backend for fast SQL-based filtering and only renders
+        PAGE_SIZE series at a time for UI responsiveness.
+        """
+        import ipywidgets as widgets
+        from IPython.display import display, clear_output
+
+        if not hasattr(self, '_db') or self._db is None:
+            print("Warning: Database not available, falling back to legacy display")
+            return self.display(use_pagination=False)
+
+        # Get summary counts from database
+        counts = self._db.get_summary_counts()
+        total_series = self._db.get_total_series_count()
+        c = self.STATUS_COLORS
+
+        # Status styles
+        STATUS_STYLES = {
+            'PASS': {'bg': '#f0fff4', 'border': '#28a745', 'text': '#166534'},
+            'WARNING': {'bg': '#fffbeb', 'border': '#ffc107', 'text': '#78350f'},
+            'FAIL': {'bg': '#fff1f2', 'border': '#dc3545', 'text': '#991b1b'},
+            'ERROR': {'bg': '#f8f9fa', 'border': '#6c757d', 'text': '#4b5563'},
+            'PENDING': {'bg': '#ecfeff', 'border': '#17a2b8', 'text': '#0e7490'},
+            'DERIVED': {'bg': '#faf5ff', 'border': '#9c27b0', 'text': '#6b21a8'},
+            'NOTE': {'bg': '#ecfeff', 'border': '#17a2b8', 'text': '#0e7490'},
+        }
+
+        # State
+        current_page = [0]
+        filters = {
+            'status': None,
+            'patient_id': None,
+            'study_key': None,
+            'series_number': None,
+            'description_like': None,
+        }
+
+        # Build filter options from database
+        patient_options = [('All Subjects', None)] + [
+            (f"{pid}: {pname}" if pname else pid, pid)
+            for pid, pname in self._db.get_patient_options()
+        ]
+        series_num_options = [('All', None)] + [
+            (str(n), n) for n in self._db.get_series_number_options()
+        ]
+
+        # Status filter options with counts
+        status_options = [('All', None)]
+        for status in ['PASS', 'FAIL', 'WARNING', 'ERROR', 'NOTE', 'DERIVED', 'PENDING']:
+            count = counts.get(status, 0)
+            if count > 0:
+                status_options.append((f'{status} ({count})', status))
+
+        # === Summary badges ===
+        summary_parts = [f'<span style="font-weight:600;font-size:14px;">{total_series}</span> series']
+        for status in ['PASS', 'FAIL', 'WARNING', 'ERROR', 'NOTE', 'DERIVED']:
+            count = counts.get(status, 0)
+            if count > 0:
+                text_color = '#333' if status == 'WARNING' else '#fff'
+                summary_parts.append(
+                    f'<span style="background:{c[status]};color:{text_color};padding:2px 8px;'
+                    f'border-radius:4px;font-size:11px;font-weight:600;">{count} {status}</span>'
+                )
+        summary_html = widgets.HTML(' '.join(summary_parts))
+
+        # === Filter widgets ===
+        status_dropdown = widgets.Dropdown(
+            options=status_options, value=None,
+            layout=widgets.Layout(width='130px')
+        )
+        subject_dropdown = widgets.Dropdown(
+            options=patient_options, value=None,
+            layout=widgets.Layout(width='180px')
+        )
+        session_dropdown = widgets.Dropdown(
+            options=[('All Sessions', None)], value=None,
+            layout=widgets.Layout(width='180px')
+        )
+        series_num_dropdown = widgets.Dropdown(
+            options=series_num_options, value=None,
+            layout=widgets.Layout(width='80px')
+        )
+        description_filter = widgets.Text(
+            placeholder='Filter description...',
+            layout=widgets.Layout(width='150px')
+        )
+
+        # === Pagination controls ===
+        prev_btn = widgets.Button(
+            description='< Prev',
+            disabled=True,
+            layout=widgets.Layout(width='80px')
+        )
+        next_btn = widgets.Button(
+            description='Next >',
+            layout=widgets.Layout(width='80px')
+        )
+        page_info = widgets.HTML(value='Page 1')
+
+        # === List area ===
+        list_area = widgets.Output(layout=widgets.Layout(
+            height='75vh',
+            overflow_y='auto',
+            background='#fafafa',
+            width='100%'
+        ))
+
+        # === Content panel (for viewer) ===
+        content_panel = widgets.Output(layout=widgets.Layout(
+            min_height='75vh',
+            overflow='auto',
+            border='1px solid #e2e8f0',
+            border_radius='6px',
+            background='#ffffff'
+        ))
+
+        placeholder = widgets.HTML(
+            '<div style="color:#64748b;padding:40px;text-align:center;font-size:14px;'
+            'background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;min-height:500px;'
+            'display:flex;align-items:center;justify-content:center;">Select a series to view</div>'
+        )
+
+        # Viewer state
+        loaded_data = {
+            'series': None,
+            'volume': None,
+            'image_viewer': None,
+            'header_viewer': None,
+            'header_settings': None,
+        }
+
+        def update_session_options(change):
+            """Update session dropdown when subject changes."""
+            patient_id = change['new']
+            if patient_id:
+                studies = self._db.get_study_options(patient_id)
+                options = [('All Sessions', None)] + [
+                    (f"{s[1]}: {s[2]}" if s[2] else s[1], s[0])  # date: description, study_uid
+                    for s in studies
+                ]
+                session_dropdown.options = options
+            else:
+                session_dropdown.options = [('All Sessions', None)]
+            session_dropdown.value = None
+
+        def get_current_filters():
+            """Build filter dict from widget values."""
+            f = {}
+            if status_dropdown.value:
+                f['status'] = status_dropdown.value
+            if subject_dropdown.value:
+                f['patient_id'] = subject_dropdown.value
+            if session_dropdown.value:
+                f['study_key'] = session_dropdown.value
+            if series_num_dropdown.value is not None:
+                f['series_number'] = series_num_dropdown.value
+            if description_filter.value:
+                f['description_like'] = f"%{description_filter.value}%"
+            return f
+
+        def render_page():
+            """Render current page of series cards."""
+            f = get_current_filters()
+            total = self._db.count_filtered_series(f)
+            total_pages = max(1, (total + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+
+            # Clamp current page
+            current_page[0] = min(current_page[0], total_pages - 1)
+            current_page[0] = max(0, current_page[0])
+
+            offset = current_page[0] * self.PAGE_SIZE
+            series_rows = self._db.get_filtered_series(f, limit=self.PAGE_SIZE, offset=offset)
+
+            # Update pagination controls
+            page_info.value = f'<span style="font-size:13px;color:#64748b;">Page {current_page[0] + 1} of {total_pages} ({total} series)</span>'
+            prev_btn.disabled = current_page[0] == 0
+            next_btn.disabled = current_page[0] >= total_pages - 1
+
+            with list_area:
+                clear_output(wait=True)
+
+                if not series_rows:
+                    display(widgets.HTML(
+                        '<div style="padding:20px;text-align:center;color:#64748b;">No series match the current filters</div>'
+                    ))
+                    return
+
+                for row in series_rows:
+                    render_series_card(row)
+
+        def render_series_card(row):
+            """Render a single series card from database row."""
+            status = row['qc_status'] or 'PENDING'
+            style = STATUS_STYLES.get(status, STATUS_STYLES['PENDING'])
+            card_bg = style['bg']
+            border_color = style['border']
+
+            # Get thumbnail
+            thumbnail_b64 = None
+            if row['thumbnail_path'] and self._thumb_cache:
+                thumbnail_b64 = self._thumb_cache.get_thumbnail_base64(row['thumbnail_path'])
+
+            if thumbnail_b64:
+                img = f'<img src="data:image/jpeg;base64,{thumbnail_b64}" style="width:100%;display:block;border-radius:6px;">'
+            elif row['is_derived']:
+                img = f'<div style="height:60px;background:linear-gradient(135deg,#4c1d95,#7c3aed);color:white;display:flex;align-items:center;justify-content:center;font-size:13px;border-radius:6px;">{row["modality"]}</div>'
+            elif row['error_message']:
+                img = f'<div style="height:60px;background:#fee2e2;color:#991b1b;display:flex;align-items:center;justify-content:center;font-size:10px;padding:8px;border-radius:6px;">{row["error_message"][:35]}...</div>'
+            else:
+                img = '<div style="height:60px;background:#e5e7eb;color:#6b7280;display:flex;align-items:center;justify-content:center;border-radius:6px;font-size:12px;">No preview</div>'
+
+            badge_bg = border_color
+            badge_text = '#fff' if status != 'WARNING' else '#78350f'
+
+            # Build label
+            series_label = f"#{row['series_number']} {row['modality']}: {row['series_description'] or ''}"
+
+            card_html = f'''
+            <div style="background:{card_bg};border:1px solid {border_color};border-left:4px solid {border_color};
+                        border-radius:8px;padding:12px;margin-bottom:10px;">
+                <div style="position:relative;">
+                    <span style="position:absolute;top:0;right:0;background:{badge_bg};color:{badge_text};
+                                 padding:4px 10px;border-radius:4px;font-size:10px;font-weight:600;">{status}</span>
+                    <div style="margin-bottom:10px;padding-right:75px;">
+                        <div style="display:flex;margin-bottom:3px;">
+                            <span style="color:#64748b;width:55px;font-size:12px;">Subject</span>
+                            <span style="font-size:12px;color:#1e293b;font-weight:500;">{row['patient_id']}</span>
+                        </div>
+                        <div style="display:flex;margin-bottom:3px;">
+                            <span style="color:#64748b;width:55px;font-size:12px;">Session</span>
+                            <span style="font-size:12px;color:#1e293b;font-weight:500;">{row['xnat_session_label'] or row['study_date'] or row['study_uid'][:20]}</span>
+                        </div>
+                        <div style="display:flex;">
+                            <span style="color:#64748b;width:55px;font-size:12px;">Series</span>
+                            <span style="font-size:12px;color:#1e293b;font-weight:500;">{series_label[:50]}</span>
+                        </div>
+                    </div>
+                    {img}
+                </div>
+            </div>
+            '''
+
+            card = widgets.HTML(card_html)
+            display(card)
+
+        def on_filter_change(_=None):
+            """Handle filter change - reset to page 1 and re-render."""
+            current_page[0] = 0
+            render_page()
+
+        def on_prev_click(_):
+            current_page[0] = max(0, current_page[0] - 1)
+            render_page()
+
+        def on_next_click(_):
+            current_page[0] += 1
+            render_page()
+
+        # Wire up observers
+        subject_dropdown.observe(update_session_options, names='value')
+        status_dropdown.observe(on_filter_change, names='value')
+        subject_dropdown.observe(on_filter_change, names='value')
+        session_dropdown.observe(on_filter_change, names='value')
+        series_num_dropdown.observe(on_filter_change, names='value')
+        description_filter.observe(on_filter_change, names='value')
+
+        prev_btn.on_click(on_prev_click)
+        next_btn.on_click(on_next_click)
+
+        # Initial render
+        render_page()
+
+        # === Layout ===
+        def make_filter(label, widget):
+            return widgets.HBox([
+                widgets.HTML(f'<span style="font-size:12px;color:#64748b;margin-right:4px;">{label}</span>'),
+                widget
+            ], layout=widgets.Layout(align_items='center'))
+
+        filter_box = widgets.HBox([
+            make_filter('Status', status_dropdown),
+            make_filter('Subject', subject_dropdown),
+            make_filter('Session', session_dropdown),
+            make_filter('#', series_num_dropdown),
+            description_filter,
+        ], layout=widgets.Layout(align_items='center', gap='12px', flex_wrap='wrap'))
+
+        pagination_box = widgets.HBox([
+            prev_btn,
+            page_info,
+            next_btn,
+        ], layout=widgets.Layout(justify_content='center', align_items='center', gap='10px', padding='10px 0'))
+
+        header = widgets.VBox([
+            summary_html,
+            filter_box,
+            pagination_box,
+        ], layout=widgets.Layout(margin='0 0 12px 0'))
+
+        # Two-panel layout
+        left_panel = widgets.VBox([list_area], layout=widgets.Layout(width='400px', flex='0 0 auto'))
+        right_panel = widgets.VBox([placeholder, content_panel], layout=widgets.Layout(flex='1 1 auto', min_width='400px'))
+
+        main_layout = widgets.HBox([left_panel, right_panel], layout=widgets.Layout(width='100%', gap='15px'))
 
         display(widgets.VBox([header, main_layout], layout=widgets.Layout(width='100%')))
 

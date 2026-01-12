@@ -43,3 +43,8 @@ include = ["dicom_qc*"]
 
 [tool.setuptools.package-data]
 dicom_qc = ["reports/templates/*.html"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+]

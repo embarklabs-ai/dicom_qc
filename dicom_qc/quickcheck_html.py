@@ -2,7 +2,8 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, Union, TYPE_CHECKING
+import shutil
 
 if TYPE_CHECKING:
     from .quickcheck import SeriesInfo
@@ -11,8 +12,59 @@ if TYPE_CHECKING:
 class QuickCheckHTMLMixin:
     """Mixin providing HTML report generation methods for QuickCheck."""
 
-    def generate_html_report(self, output_path: Path) -> str:
-        """Generate a self-contained HTML report with 3-pane thumbnail grid."""
+    def generate_html_report(
+        self,
+        output_path: Path,
+        series_per_page: int = 500,
+        embed_thumbnails: bool = None,
+    ) -> tuple:
+        """Generate HTML report for QC review.
+
+        For small datasets (<=500 series), generates a single self-contained HTML file.
+        For large datasets, generates HTML + thumbnails folder, zipped for sharing.
+
+        Args:
+            output_path: Output path. For embedded reports, this is the HTML file path.
+                        For external thumbnails, a directory is created here.
+            series_per_page: Ignored (kept for API compatibility)
+            embed_thumbnails: If True, generate single self-contained HTML.
+                            If False, HTML + external thumbnails folder + zip.
+                            If None, auto-select based on series count (<=500 embeds).
+
+        Returns:
+            Tuple of (html_path, zip_path). zip_path is None for embedded single-file reports.
+        """
+        total_series = len(self.get_all_series())
+
+        # Auto-select embedding for small datasets
+        if embed_thumbnails is None:
+            embed_thumbnails = total_series <= 500
+
+        if embed_thumbnails:
+            # Single self-contained file
+            self._generate_single_page_report(output_path)
+            return (Path(output_path), None)
+        else:
+            # Multi-page report with external thumbnails
+            output_path = Path(output_path)
+
+            # Use directory name based on output_path
+            if output_path.suffix in ('.html', '.zip'):
+                report_dir = output_path.with_suffix('')
+            else:
+                report_dir = output_path
+
+            self._generate_multi_page_report(report_dir, series_per_page)
+
+            # Create zip for sharing
+            zip_path = report_dir.with_suffix('.zip')
+            shutil.make_archive(str(report_dir), 'zip', report_dir.parent, report_dir.name)
+
+            html_path = report_dir / "index.html"
+            return (html_path, zip_path)
+
+    def _generate_single_page_report(self, output_path: Path) -> str:
+        """Generate single-page self-contained HTML report (legacy)."""
         counts = self.get_summary()
         total_patients = len(self.patients)
         total_studies = sum(len(p.studies) for p in self.patients.values())
@@ -36,6 +88,88 @@ class QuickCheckHTMLMixin:
         output_path.write_text(html, encoding='utf-8')
 
         return html
+
+    def _generate_multi_page_report(
+        self,
+        output_dir: Path,
+        series_per_page: int = 500,
+    ) -> List[Path]:
+        """Generate HTML report with external thumbnails.
+
+        Creates:
+        - index.html: Full report with all series
+        - thumbnails/: Directory with thumbnail files
+
+        Args:
+            output_dir: Directory to write report files
+            series_per_page: Ignored (kept for API compatibility)
+
+        Returns:
+            List of generated file paths
+        """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create thumbnails directory
+        thumb_out = output_dir / "thumbnails"
+        thumb_out.mkdir(exist_ok=True)
+
+        # Copy thumbnails to output directory
+        thumb_paths = {}  # series_uid -> relative path
+        for series in self.get_all_series():
+            thumb_rel_path = None
+            if hasattr(series, '_thumbnail_path') and series._thumbnail_path:
+                if hasattr(self, '_thumb_cache') and self._thumb_cache:
+                    src = self._thumb_cache.cache_dir / series._thumbnail_path
+                    if src.exists():
+                        thumb_filename = series._thumbnail_path.replace('/', '_')
+                        dst = thumb_out / thumb_filename
+                        shutil.copy(src, dst)
+                        thumb_rel_path = f"thumbnails/{thumb_filename}"
+            elif series.thumbnail:
+                # Convert base64 to file
+                import base64
+                import hashlib
+                thumb_hash = hashlib.sha256(series.uid.encode()).hexdigest()[:16]
+                thumb_filename = f"{thumb_hash}.jpg"
+                dst = thumb_out / thumb_filename
+                try:
+                    data = base64.b64decode(series.thumbnail)
+                    dst.write_bytes(data)
+                    thumb_rel_path = f"thumbnails/{thumb_filename}"
+                except Exception:
+                    pass
+            thumb_paths[series.uid] = thumb_rel_path
+
+        # Store for use in HTML generation
+        self._external_thumb_paths = thumb_paths
+
+        # Generate single HTML file with external thumbnails
+        counts = self.get_summary()
+        total_patients = len(self.patients)
+        total_studies = sum(len(p.studies) for p in self.patients.values())
+        total_series = len(self.get_all_series())
+
+        # Collect check names for filter dropdown
+        check_names = set()
+        for series in self.get_all_series():
+            if series.qc_report:
+                for r in series.qc_report.results:
+                    if r.status in ('FAIL', 'WARNING', 'NOTE'):
+                        check_names.add(r.check_name)
+        check_names = sorted(check_names)
+
+        html = self._html_header(counts, total_patients, total_studies, total_series, check_names)
+        html += self._html_patient_sections_external()
+        html += self._html_footer()
+
+        # Clean up temp attribute
+        del self._external_thumb_paths
+
+        index_path = output_dir / "index.html"
+        index_path.write_text(html, encoding='utf-8')
+
+        return [index_path]
 
     def _html_header(self, counts: Dict[str, int], n_patients: int, n_studies: int, n_series: int,
                      check_names: List[str] = None) -> str:
@@ -175,6 +309,112 @@ class QuickCheckHTMLMixin:
             html += '    </div>\n'
         return html
 
+    def _html_patient_sections_external(self) -> str:
+        """Generate HTML for patient/study/series sections with external thumbnails."""
+        def series_sort_key(item):
+            series = item[1]
+            try:
+                return (0, int(series.series_number))
+            except (ValueError, TypeError):
+                return (1, str(series.series_number or ''))
+
+        html = ''
+        for patient_id, patient in sorted(self.patients.items()):
+            html += f'    <div class="patient-section">\n'
+            html += f'        <div class="patient-header">{patient.label}</div>\n'
+
+            for study_uid, study in sorted(patient.studies.items(), key=lambda x: x[1].date):
+                html += f'        <div class="study-section">\n'
+                html += f'            <div class="study-header">{study.label}</div>\n'
+                html += '            <div class="qc-grid">\n'
+
+                # Build OHIF URL context for this study
+                ohif_url = None
+                if self._xnat_mode and self._xnat_base_url and self._xnat_project_id:
+                    subj_id = patient.xnat_subject_id
+                    exp_id = study.xnat_experiment_id
+                    exp_label = study.xnat_session_label
+                    if subj_id and exp_id:
+                        ohif_url = (f"{self._xnat_base_url}/VIEWER/?"
+                                    f"subjectId={subj_id}&projectId={self._xnat_project_id}"
+                                    f"&experimentId={exp_id}&experimentLabel={exp_label}")
+
+                for series_uid, series in sorted(study.series.items(), key=series_sort_key):
+                    thumb_path = self._external_thumb_paths.get(series.uid)
+                    html += self._html_series_thumb_external(series, thumb_path, ohif_url)
+
+                html += '            </div>\n'
+                html += '        </div>\n'
+            html += '    </div>\n'
+        return html
+
+    def _html_series_thumb_external(
+        self,
+        series: 'SeriesInfo',
+        thumb_path: Optional[str],
+        ohif_url: Optional[str] = None,
+    ) -> str:
+        """Generate HTML for a series thumbnail using external file path."""
+        status = series.qc_status.lower()
+
+        if thumb_path:
+            img_html = f'<img src="{thumb_path}" alt="{series.description}">'
+        elif series.is_derived:
+            img_html = (f'<div style="height:113px;background:#2d1f3d;color:#9c27b0;'
+                       f'display:flex;align-items:center;justify-content:center;font-size:16px;">'
+                       f'{series.modality}</div>')
+        elif series.error:
+            error_msg = series.error[:50] if len(series.error) > 50 else series.error
+            img_html = (f'<div style="height:113px;background:#333;color:#999;'
+                       f'display:flex;align-items:center;justify-content:center;'
+                       f'font-size:12px;padding:10px;text-align:center;">{error_msg}</div>')
+        else:
+            img_html = ('<div style="height:113px;background:#333;color:#999;'
+                       'display:flex;align-items:center;justify-content:center;">No image</div>')
+
+        # Build reason HTML
+        reason_html = ''
+        if series.error:
+            reason_html = (f'<div style="padding:6px 10px;font-size:11px;'
+                          f'background:#f8d7da;color:#721c24;">Error: {series.error[:50]}</div>')
+        elif series.is_derived and series.derived_info:
+            reason_html = (f'<div style="padding:6px 10px;font-size:11px;'
+                          f'background:#2d1f3d;color:#e0c3fc;">{series.derived_info}</div>')
+        elif series.qc_report and series.qc_status in ('FAIL', 'WARNING', 'NOTE'):
+            issues = [r for r in series.qc_report.results if r.status in ('FAIL', 'WARNING', 'NOTE')]
+            if issues:
+                issue_lines = [f'<b>{r.check_name}:</b> {r.message}' for r in issues[:3]]
+                if series.qc_status == 'FAIL':
+                    bg_color, text_color = '#f8d7da', '#721c24'
+                elif series.qc_status == 'WARNING':
+                    bg_color, text_color = '#fff3cd', '#856404'
+                else:
+                    bg_color, text_color = '#d1ecf1', '#0c5460'
+                reason_html = (f'<div style="padding:6px 10px;font-size:11px;'
+                              f'background:{bg_color};color:{text_color};">'
+                              f'{" | ".join(issue_lines)}</div>')
+
+        # Link wrapper
+        link_style = 'cursor:pointer;' if ohif_url else ''
+        link_start = f'<a href="{ohif_url}" target="_blank" style="text-decoration:none;color:inherit;">' if ohif_url else ''
+        link_end = '</a>' if ohif_url else ''
+
+        # Check names for filtering
+        series_check_names = []
+        if series.qc_report:
+            series_check_names = [r.check_name for r in series.qc_report.results if r.status in ('FAIL', 'WARNING', 'NOTE')]
+        data_checks = ','.join(series_check_names)
+
+        return f'''                {link_start}<div class="qc-thumb {status}" data-status="{status}" data-checks="{data_checks}" style="{link_style}">
+                    {img_html}
+                    <div class="info">
+                        <span class="series-label">{series.label}</span>
+                        <span class="status-badge {status}">{series.qc_status}</span>
+                    </div>
+                    {reason_html}
+                </div>{link_end}
+'''
+
     def _html_series_thumb(self, series: 'SeriesInfo', ohif_url: Optional[str] = None) -> str:
         """Generate HTML for a single series thumbnail.
 
@@ -183,8 +423,18 @@ class QuickCheckHTMLMixin:
             ohif_url: Optional OHIF viewer URL - if provided, thumbnail becomes clickable
         """
         status = series.qc_status.lower()
-        if series.thumbnail:
-            img_src = f'data:image/png;base64,{series.thumbnail}'
+
+        # Get thumbnail - check disk cache first, then base64
+        thumb_b64 = None
+        if hasattr(series, '_thumbnail_path') and series._thumbnail_path and hasattr(self, '_thumb_cache') and self._thumb_cache:
+            thumb_b64 = self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
+            mime = 'image/jpeg'
+        elif series.thumbnail:
+            thumb_b64 = series.thumbnail
+            mime = 'image/png'
+
+        if thumb_b64:
+            img_src = f'data:{mime};base64,{thumb_b64}'
         elif series.is_derived:
             # SVG placeholder for derived types
             img_src = (f'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="340" height="113">'

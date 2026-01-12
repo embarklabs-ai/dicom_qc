@@ -94,7 +94,8 @@ class SeriesInfo:
     files: List[Any] = field(default_factory=list)  # Path or xnat file objects
     volume: Any = None
     qc_report: Any = None
-    thumbnail: Optional[str] = None
+    thumbnail: Optional[str] = None  # Base64 thumbnail (legacy, for backward compat)
+    _thumbnail_path: Optional[str] = None  # Relative path to disk-cached thumbnail
     error: Optional[str] = None
     transfer_syntax: Optional[str] = None
     implementation: Optional[str] = None
@@ -108,6 +109,7 @@ class SeriesInfo:
     is_derived: bool = False
     referenced_series_uid: Optional[str] = None  # SeriesInstanceUID of referenced images
     derived_info: Optional[str] = None  # Human-readable info about the derived data
+    _db_id: Optional[int] = None  # Database row ID (for scaled mode)
 
     @property
     def qc_status(self) -> str:
@@ -194,8 +196,14 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         '1.2.840.10008.5.1.4.1.1.88.34',  # Comprehensive 3D SR Storage
     }
 
-    def __init__(self, data_dir: Optional[Path] = None):
-        """Initialize with optional data directory."""
+    def __init__(self, data_dir: Optional[Path] = None, use_db: bool = True):
+        """Initialize with optional data directory.
+
+        Args:
+            data_dir: Directory containing DICOM files (local mode) or cache location (XNAT mode)
+            use_db: If True, use SQLite database for scaled operations (100K+ series).
+                   Database stored in {data_dir}/_dicom_qc/qc_database.sqlite3
+        """
         self.data_dir = Path(data_dir) if data_dir else None
         self.patients: Dict[str, PatientInfo] = {}
         self.loader = DicomLoader()
@@ -204,6 +212,116 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         self._xnat_session: Any = None  # XNAT session for restoring file access
         self._xnat_project_id: Optional[str] = None  # XNAT project ID for OHIF links
         self._xnat_base_url: Optional[str] = None  # XNAT base URL for OHIF links
+
+        # Scaled mode: SQLite database + thumbnail disk cache
+        self._use_db = use_db
+        self._db = None
+        self._thumb_cache = None
+
+        if use_db and data_dir:
+            self._init_storage()
+
+    def _init_storage(self):
+        """Initialize database and thumbnail cache for scaled operations."""
+        if not self.data_dir:
+            return
+
+        from dicom_qc.storage import QCDatabase, ThumbnailCache
+
+        storage_dir = self.data_dir / '_dicom_qc'
+        storage_dir.mkdir(parents=True, exist_ok=True)
+
+        self._db = QCDatabase(storage_dir / 'qc_database.sqlite3')
+        self._thumb_cache = ThumbnailCache(storage_dir / 'thumbnails')
+
+    def _sync_series_to_db(self, series: 'SeriesInfo', patient_id: str, study_key: str,
+                           patient: 'PatientInfo', study: 'StudyInfo') -> int:
+        """Sync a series to the database, return database ID."""
+        if not self._db:
+            return None
+
+        # Insert/update patient
+        patient_db_id = self._db.insert_patient(
+            patient_id=patient_id,
+            patient_name=patient.patient_name,
+            xnat_subject_id=patient.xnat_subject_id,
+        )
+
+        # Insert/update study
+        study_db_id = self._db.insert_study(
+            patient_db_id=patient_db_id,
+            study_uid=study.uid,
+            study_date=study.date,
+            study_description=study.description,
+            xnat_session_label=study.xnat_session_label,
+            xnat_experiment_id=study.xnat_experiment_id,
+        )
+
+        # Insert/update series
+        series_db_id = self._db.insert_series(
+            study_db_id=study_db_id,
+            series_uid=series.uid,
+            series_number=series.series_number,
+            series_description=series.description,
+            modality=series.modality,
+            qc_status=series.qc_status,
+            is_derived=series.is_derived,
+            derived_info=series.derived_info,
+            error_message=series.error,
+            thumbnail_path=series._thumbnail_path,
+            xnat_scan_id=series.xnat_scan_id,
+            transfer_syntax=series.transfer_syntax,
+            file_count=len(series.files) if series.files else len(series._file_uris),
+        )
+
+        # Store series files if available
+        if series._file_uris or series._file_paths:
+            self._db.insert_series_files(
+                series_db_id,
+                file_uris=series._file_uris,
+                local_paths=series._file_paths,
+            )
+
+        # Store QC results if available
+        if series.qc_report:
+            self._db.insert_qc_results_from_report(series_db_id, series.qc_report)
+
+        series._db_id = series_db_id
+        return series_db_id
+
+    def _sync_all_to_db(self):
+        """Sync all series to database."""
+        if not self._db:
+            return
+
+        for patient_id, patient in self.patients.items():
+            for study_key, study in patient.studies.items():
+                for series_key, series in study.series.items():
+                    self._sync_series_to_db(series, patient_id, study_key, patient, study)
+
+        self._db.commit()
+
+    def _migrate_thumbnails_to_disk(self):
+        """Migrate base64 thumbnails to disk cache."""
+        if not self._thumb_cache:
+            return
+
+        migrated = 0
+        for series in self.get_all_series():
+            if series.thumbnail and not series._thumbnail_path:
+                # Migrate base64 to disk
+                rel_path = self._thumb_cache.save_thumbnail_from_base64(
+                    series.uid, series.thumbnail
+                )
+                if rel_path:
+                    series._thumbnail_path = rel_path
+                    series.thumbnail = None  # Free memory
+                    migrated += 1
+
+        if migrated:
+            print(f"Migrated {migrated} thumbnails to disk cache")
+
+        return migrated
 
     def save(self, path: Optional[Path] = None) -> Path:
         """Save discovery and processing state to a file.
@@ -223,8 +341,13 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         if path:
             self._save_path = Path(path)
         elif not self._save_path:
-            # Generate default path
-            self._save_path = Path(f'quickcheck_state.pkl')
+            # Default: save in _dicom_qc/ storage directory
+            if self.data_dir:
+                storage_dir = self.data_dir / '_dicom_qc'
+                storage_dir.mkdir(parents=True, exist_ok=True)
+                self._save_path = storage_dir / 'qc_state.pkl'
+            else:
+                self._save_path = Path('qc_state.pkl')
 
         # Ensure file URIs and paths are stored before clearing non-picklable objects
         missing_uris_count = 0
@@ -245,13 +368,22 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                 series.files = []
                 series._scan_obj = None
 
-        # Prepare data for saving
+        # Migrate thumbnails to disk cache if available (frees memory)
+        if self._thumb_cache:
+            self._migrate_thumbnails_to_disk()
+
+        # Sync to database if available
+        if self._db:
+            self._sync_all_to_db()
+
+        # Prepare data for saving (pickle for backward compatibility)
         save_data = {
             'patients': self.patients,
             '_xnat_mode': self._xnat_mode,
             'data_dir': str(self.data_dir) if self.data_dir else None,
             '_xnat_project_id': self._xnat_project_id,
             '_xnat_base_url': self._xnat_base_url,
+            '_use_db': self._use_db,  # Track if scaled mode was used
         }
 
         with open(self._save_path, 'wb') as f:
@@ -259,18 +391,28 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         return self._save_path
 
-    def load(self, path: Path) -> 'QuickCheck':
+    def load(self, path: Path = None, use_db: bool = None) -> 'QuickCheck':
         """Load discovery and processing state from a file.
 
         Args:
-            path: Path to saved state file
+            path: Path to saved state file. If None, uses default location
+                  ({data_dir}/_dicom_qc/qc_state.pkl)
+            use_db: If True, initialize database for scaled operations.
+                   If None, auto-detect from save file.
 
         Returns:
             self for chaining
         """
         import pickle
 
-        path = Path(path)
+        if path is None:
+            if self.data_dir:
+                path = self.data_dir / '_dicom_qc' / 'qc_state.pkl'
+            else:
+                path = Path('qc_state.pkl')
+        else:
+            path = Path(path)
+
         if not path.exists():
             raise FileNotFoundError(f"Save file not found: {path}")
 
@@ -285,10 +427,26 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         self._xnat_base_url = save_data.get('_xnat_base_url')
         self._save_path = path
 
+        # Determine if we should use scaled mode
+        if use_db is None:
+            # Auto-detect: use DB if save file used it, or if we have many series
+            use_db = save_data.get('_use_db', False)
+            all_series = self.get_all_series()
+            if not use_db and len(all_series) > 500:
+                use_db = True  # Auto-enable for large datasets
+
+        self._use_db = use_db
+        if use_db and self.data_dir:
+            self._init_storage()
+            # Migrate base64 thumbnails to disk if present
+            self._migrate_thumbnails_to_disk()
+            # Sync to database
+            self._sync_all_to_db()
+
         # Count what was loaded
         all_series = self.get_all_series()
         total_series = len(all_series)
-        with_thumbnail = sum(1 for s in all_series if s.thumbnail)
+        with_thumbnail = sum(1 for s in all_series if s.thumbnail or s._thumbnail_path)
         derived = sum(1 for s in all_series if s.is_derived)
         errors = sum(1 for s in all_series if s.error)
         pending = total_series - with_thumbnail - derived - errors
@@ -299,9 +457,30 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             status_parts.append(f"{pending} pending")
         if errors > 0:
             status_parts.append(f"{errors} errors")
+        if self._db:
+            status_parts.append("(scaled mode)")
         print(f"  {', '.join(status_parts)}")
 
         return self
+
+    def has_save(self) -> bool:
+        """Check if a save file exists at the default location."""
+        if self.data_dir:
+            path = self.data_dir / '_dicom_qc' / 'qc_state.pkl'
+        else:
+            path = Path('qc_state.pkl')
+        return path.exists()
+
+    def load_if_exists(self) -> bool:
+        """Load from default save location if it exists.
+
+        Returns:
+            True if loaded, False if no save file found
+        """
+        if self.has_save():
+            self.load()
+            return True
+        return False
 
     @classmethod
     def from_save(cls, path: Path) -> 'QuickCheck':
@@ -316,6 +495,53 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         qc = cls()
         qc.load(path)
         return qc
+
+    def reset(self, delete_storage: bool = True) -> 'QuickCheck':
+        """Reset to fresh state, optionally deleting all stored data.
+
+        Use this to start over with a clean slate. Clears:
+        - All in-memory patient/study/series data
+        - SQLite database (if delete_storage=True)
+        - Thumbnail cache (if delete_storage=True)
+        - Pickle save file (if delete_storage=True)
+
+        Args:
+            delete_storage: If True, delete database, thumbnails, and save file.
+                          If False, only clear in-memory state.
+
+        Returns:
+            self for chaining
+
+        Example:
+            qc = QuickCheck(data_dir)
+            qc.reset()      # Clear everything and start fresh
+            qc.discover()   # Re-scan for DICOM files
+        """
+        import shutil
+
+        # Clear in-memory state
+        self.patients = {}
+
+        if delete_storage and self.data_dir:
+            storage_dir = Path(self.data_dir) / '_dicom_qc'
+            if storage_dir.exists():
+                shutil.rmtree(storage_dir)
+                print(f"Deleted storage: {storage_dir}")
+
+        if delete_storage and self._save_path and Path(self._save_path).exists():
+            Path(self._save_path).unlink()
+            print(f"Deleted save file: {self._save_path}")
+
+        # Reset storage references
+        self._db = None
+        self._thumb_cache = None
+
+        # Re-initialize storage if using scaled mode
+        if self._use_db and self.data_dir:
+            self._init_storage()
+
+        print("Reset complete. Ready for discover().")
+        return self
 
     def connect_xnat(self, session: Any) -> 'QuickCheck':
         """Connect an XNAT session for file access after loading from save.
@@ -397,6 +623,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                 if series.uid in existing_series:
                     old = existing_series[series.uid]
                     series.thumbnail = old.thumbnail
+                    series._thumbnail_path = old._thumbnail_path
                     series.qc_report = old.qc_report
                     series.is_derived = old.is_derived
                     series.derived_info = old.derived_info
@@ -404,6 +631,10 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                     restored += 1
             if restored > 0:
                 print(f"Restored {restored} previously processed series")
+
+        # Auto-save after discovery
+        if self.data_dir:
+            self.save()
 
         return self.patients
 
@@ -638,8 +869,8 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                 series.error = "No file paths available (scan may have been removed from XNAT)"
                 missing_count += 1
 
-        # Save discovery progress
-        if self._save_path:
+        # Auto-save after discovery
+        if self.data_dir:
             self.save()
 
     def _add_file_to_hierarchy(self, ds: pydicom.Dataset, dcm_file: Path) -> None:
@@ -974,7 +1205,15 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             # Check for missing temporal metadata in dynamic series
             self._check_temporal_metadata(series)
 
-            series.thumbnail = SnapshotGenerator(volume).create_tripane_thumbnail()
+            # Generate thumbnail - use disk cache if available (saves memory)
+            snapshot_gen = SnapshotGenerator(volume)
+            if self._thumb_cache:
+                thumb_path = self._thumb_cache.get_path_for_series(series.uid)
+                snapshot_gen.create_tripane_thumbnail_file(thumb_path)
+                series._thumbnail_path = self._thumb_cache.get_relative_path(series.uid)
+                series.thumbnail = None  # Don't store base64 in memory
+            else:
+                series.thumbnail = snapshot_gen.create_tripane_thumbnail()
 
             # Only keep volume if requested (saves memory for batch processing)
             if keep_volume:
@@ -1172,8 +1411,10 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         except Exception:
             pass  # Skip check if we can't parse
 
-    def process_all(self, progress_callback: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, int]:
-        """Process all series with optional progress callback.
+    def _process_all_simple(self, progress_callback: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, int]:
+        """Process all series with optional progress callback (no UI).
+
+        For non-Jupyter environments. Use process_all() for interactive use.
 
         Args:
             progress_callback: Optional callback(current, total, label) for progress updates
@@ -1194,7 +1435,14 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         return self.get_summary()
 
-    def process_all_interactive(self, reprocess: bool = False, retry_errors: bool = False, save_interval: int = 10):
+    def process_all(
+        self,
+        reprocess: bool = False,
+        retry_errors: bool = False,
+        save_interval: int = 10,
+        parallel: bool = None,
+        max_workers: int = None,
+    ):
         """Process all series with live Jupyter progress display and grid view.
 
         Shows progress bar, ETA, status counts, and a live-updating thumbnail grid.
@@ -1203,6 +1451,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             reprocess: If False, skip already-processed series (those with thumbnails or is_derived)
             retry_errors: If True, retry series that previously had errors
             save_interval: Save progress every N series (0 to disable)
+            parallel: If True, use parallel processing for faster throughput.
+                     If None, auto-enable for >100 series.
+            max_workers: Number of parallel workers. Default: 4 for parallel mode.
 
         Returns:
             Summary counts by status
@@ -1229,7 +1480,8 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             to_process = all_series
             skipped = 0
         else:
-            to_process = [s for s in all_series if not s.thumbnail and not s.is_derived and not s.error]
+            to_process = [s for s in all_series
+                         if not s.thumbnail and not s._thumbnail_path and not s.is_derived and not s.error]
             skipped = len(all_series) - len(to_process)
 
         # Add series with errors if retry_errors=True
@@ -1277,9 +1529,13 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         ], layout=widgets.Layout(width='100%'))
         display(container)
 
-        # Track recent thumbnails (only keep last N in memory for display)
-        max_recent = 20
+        # Track recent thumbnails - only show first few so user can verify, then stop
+        # (no value in watching 100K thumbnails scroll by)
+        max_recent = 4
+        max_thumbs_to_show = 5  # Stop updating after this many
         recent_series = []
+        recent_thumb_cache = {}
+        thumbs_shown = [0]  # Use list for mutability in nested function
 
         # Track timing
         start_time = time.time()
@@ -1351,8 +1607,13 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             for series in recent_series:
                 color = c.get(series.qc_status, '#ccc')
 
-                if series.thumbnail:
-                    img = f'<img src="data:image/png;base64,{series.thumbnail}" style="width:100%;display:block;">'
+                # Get thumbnail from cache (loaded once when series added to recent)
+                thumb_b64 = recent_thumb_cache.get(series.uid)
+
+                if thumb_b64:
+                    # Use jpeg for disk cache, png for legacy base64
+                    mime = 'image/jpeg' if series._thumbnail_path else 'image/png'
+                    img = f'<img src="data:{mime};base64,{thumb_b64}" style="width:100%;display:block;">'
                 elif series.is_derived:
                     img = f'<div style="height:70px;background:#2d1f3d;color:#9c27b0;display:flex;align-items:center;justify-content:center;font-size:11px;">{series.modality}</div>'
                 elif series.error:
@@ -1368,33 +1629,108 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                 </div>''')
 
             html_parts.append('</div>')
+
+            # Show message when previews stop
+            if thumbs_shown[0] >= max_thumbs_to_show:
+                html_parts.append(
+                    '<div style="color:#888;font-size:11px;margin-top:8px;font-style:italic;">'
+                    'Preview stopped after first few series. See status map above for progress.'
+                    '</div>'
+                )
+
             return ''.join(html_parts)
 
         # Initial render
         status_map_html.value = render_status_map()
 
-        # Process each series
-        for i, series in enumerate(to_process):
-            series_start = time.time()
-            update_status(i, series)
+        # Auto-enable parallelism for large datasets
+        if parallel is None:
+            parallel = total > 100
 
-            self.process_series(series)
+        if max_workers is None:
+            max_workers = 4 if parallel else 1
 
-            series_time = time.time() - series_start
-            recent_times.append(series_time)
+        if parallel and max_workers > 1:
+            # Parallel processing with ThreadPoolExecutor
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            import threading
 
-            # Track recent series for thumbnail display
-            recent_series.append(series)
-            if len(recent_series) > max_recent:
-                recent_series.pop(0)
+            processed_count = [0]
+            lock = threading.Lock()
 
-            # Update displays
-            status_map_html.value = render_status_map()
-            recent_thumbs_html.value = render_recent_thumbs()
+            def process_one(series):
+                """Process a single series (thread-safe)."""
+                self.process_series(series)
+                return series
 
-            # Periodic save
-            if save_interval > 0 and (i + 1) % save_interval == 0 and self._save_path:
-                self.save()
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all jobs
+                future_to_series = {executor.submit(process_one, s): s for s in to_process}
+
+                for future in as_completed(future_to_series):
+                    series = future_to_series[future]
+                    try:
+                        future.result()
+                    except Exception as e:
+                        series.error = str(e)
+
+                    with lock:
+                        processed_count[0] += 1
+                        i = processed_count[0]
+
+                        series_time = time.time() - start_time
+                        recent_times.append(series_time / i if i > 0 else 0)
+
+                        # Update displays
+                        update_status(i, series)
+                        status_map_html.value = render_status_map()
+
+                        # Only show thumbnails for first few series (verify it's working)
+                        if thumbs_shown[0] < max_thumbs_to_show:
+                            if series._thumbnail_path and self._thumb_cache:
+                                recent_thumb_cache[series.uid] = self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
+                            elif series.thumbnail:
+                                recent_thumb_cache[series.uid] = series.thumbnail
+                            recent_series.append(series)
+                            if len(recent_series) > max_recent:
+                                old = recent_series.pop(0)
+                                recent_thumb_cache.pop(old.uid, None)
+                            thumbs_shown[0] += 1
+                            recent_thumbs_html.value = render_recent_thumbs()
+
+                        # Periodic save
+                        if save_interval > 0 and i % save_interval == 0 and self._save_path:
+                            self.save()
+        else:
+            # Sequential processing (original behavior)
+            for i, series in enumerate(to_process):
+                series_start = time.time()
+                update_status(i, series)
+
+                self.process_series(series)
+
+                series_time = time.time() - series_start
+                recent_times.append(series_time)
+
+                # Update displays
+                status_map_html.value = render_status_map()
+
+                # Only show thumbnails for first few series (verify it's working)
+                if thumbs_shown[0] < max_thumbs_to_show:
+                    if series._thumbnail_path and self._thumb_cache:
+                        recent_thumb_cache[series.uid] = self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
+                    elif series.thumbnail:
+                        recent_thumb_cache[series.uid] = series.thumbnail
+                    recent_series.append(series)
+                    if len(recent_series) > max_recent:
+                        old = recent_series.pop(0)
+                        recent_thumb_cache.pop(old.uid, None)
+                    thumbs_shown[0] += 1
+                    recent_thumbs_html.value = render_recent_thumbs()
+
+                # Periodic save
+                if save_interval > 0 and (i + 1) % save_interval == 0 and self._save_path:
+                    self.save()
 
         # Final save
         if self._save_path:
@@ -1429,4 +1765,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         current_series_html.value = ""
 
         return counts
+
+    # Backward compatibility alias
+    process_all_interactive = process_all
 
