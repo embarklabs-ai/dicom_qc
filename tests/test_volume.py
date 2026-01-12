@@ -6,24 +6,7 @@ import SimpleITK as sitk
 
 from dicom_qc.core.volume import DicomVolume, ScanInfo
 
-
-def create_sitk_image(
-    shape: tuple = (20, 256, 256),
-    spacing: tuple = (3.0, 1.0, 1.0),
-    origin: tuple = (0.0, 0.0, 0.0),
-    direction: tuple = None,
-) -> sitk.Image:
-    """Create a SimpleITK image for testing."""
-    slices, rows, cols = shape
-    np.random.seed(42)
-    data = np.random.rand(slices, rows, cols).astype(np.float32) * 1000
-    image = sitk.GetImageFromArray(data)
-    image.SetSpacing((spacing[2], spacing[1], spacing[0]))
-    image.SetOrigin(origin)
-    if direction is None:
-        direction = (1, 0, 0, 0, 1, 0, 0, 0, 1)
-    image.SetDirection(direction)
-    return image
+from tests.helpers import create_sitk_image
 
 
 class TestScanInfo:
@@ -291,6 +274,21 @@ class TestDicomVolumePixelArray:
         last = axial_volume.get_slice(19)
         assert last.shape == (256, 256)
 
+    def test_get_slice_out_of_bounds(self, axial_volume):
+        """Test slice access raises on invalid index."""
+        with pytest.raises(IndexError):
+            axial_volume.get_slice(100)
+
+    def test_get_coronal_slice_out_of_bounds(self, axial_volume):
+        """Test coronal slice access raises on invalid index."""
+        with pytest.raises(IndexError):
+            axial_volume.get_coronal_slice(300)
+
+    def test_get_sagittal_slice_out_of_bounds(self, axial_volume):
+        """Test sagittal slice access raises on invalid index."""
+        with pytest.raises(IndexError):
+            axial_volume.get_sagittal_slice(300)
+
 
 class TestDicomVolumeLPS:
     """Tests for LPS reorientation."""
@@ -420,12 +418,12 @@ class TestDicomVolumeEdgeCases:
         """Test multi-orientation volume."""
         assert localizer_volume.num_orientations == 3
 
-    def test_different_slice_counts(self):
+    @pytest.mark.parametrize("num_slices", [1, 2, 5, 100])
+    def test_different_slice_counts(self, num_slices):
         """Test volumes with various slice counts."""
-        for num_slices in [1, 2, 5, 100]:
-            image = create_sitk_image(shape=(num_slices, 64, 64))
-            volume = DicomVolume(sitk_image=image)
-            assert volume.num_slices == num_slices
+        image = create_sitk_image(shape=(num_slices, 64, 64))
+        volume = DicomVolume(sitk_image=image)
+        assert volume.num_slices == num_slices
 
     def test_very_thin_slices(self):
         """Test volume with very thin slices."""

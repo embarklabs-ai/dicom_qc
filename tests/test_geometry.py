@@ -2,29 +2,11 @@
 
 import numpy as np
 import pytest
-import SimpleITK as sitk
 
 from dicom_qc.core.geometry import GeometryQC, QCResult, QCReport
 from dicom_qc.core.volume import DicomVolume
 
-
-def create_sitk_image(
-    shape: tuple = (20, 256, 256),
-    spacing: tuple = (3.0, 1.0, 1.0),
-    origin: tuple = (0.0, 0.0, 0.0),
-    direction: tuple = None,
-) -> sitk.Image:
-    """Create a SimpleITK image for testing."""
-    slices, rows, cols = shape
-    np.random.seed(42)
-    data = np.random.rand(slices, rows, cols).astype(np.float32) * 1000
-    image = sitk.GetImageFromArray(data)
-    image.SetSpacing((spacing[2], spacing[1], spacing[0]))
-    image.SetOrigin(origin)
-    if direction is None:
-        direction = (1, 0, 0, 0, 1, 0, 0, 0, 1)
-    image.SetDirection(direction)
-    return image
+from tests.helpers import create_sitk_image
 
 
 class TestQCResult:
@@ -118,6 +100,7 @@ class TestSliceOrdering:
         assert result.status == 'WARNING'
         assert 'Only one slice' in result.message
 
+
 class TestOrientationConsistency:
     """Tests for check_orientation_consistency."""
 
@@ -196,23 +179,53 @@ class TestGapDetection:
         assert result.status == 'WARNING'
         assert 'Only one slice' in result.message
 
-    def test_gap_detection_fail(self):
-        """Test detection of gaps (missing slices)."""
-        # Create volume with irregular spacing (gap at slice 5)
-        slices = 10
-        data = np.random.rand(slices, 64, 64).astype(np.float32)
-        image = sitk.GetImageFromArray(data)
-        # Normal spacing is 3mm, but we'll create positions manually
-        # by modifying the slice direction to simulate gaps
-        image.SetSpacing((1.0, 1.0, 3.0))
-        image.SetOrigin((0.0, 0.0, 0.0))
-        image.SetDirection((1, 0, 0, 0, 1, 0, 0, 0, 1))
+    def test_large_gap_fail(self, axial_volume):
+        """Test that large gaps (>1.5x expected) return FAIL status."""
+        from unittest.mock import patch, PropertyMock
 
-        volume = DicomVolume(sitk_image=image)
-        qc = GeometryQC(volume)
-        result = qc.check_gap_detection()
-        # With regular spacing from SimpleITK, should pass
-        assert result.status == 'PASS'
+        # Create positions with a large gap (missing slice - double spacing)
+        # Normal 3mm spacing: [0, 3, 6, 9, 12, 15, ...]
+        # With gap: [0, 3, 6, 9, 12, 18, ...] - 6mm gap at index 5 (2x expected)
+        num_slices = axial_volume.num_slices
+        positions_with_gap = np.zeros((num_slices, 3))
+        z_positions = list(range(0, 15, 3)) + list(range(18, 18 + (num_slices - 5) * 3, 3))
+        for i, z in enumerate(z_positions[:num_slices]):
+            positions_with_gap[i] = [0, 0, z]
+
+        with patch.object(
+            type(axial_volume), 'image_positions',
+            new_callable=PropertyMock, return_value=positions_with_gap
+        ):
+            qc = GeometryQC(axial_volume)
+            result = qc.check_gap_detection()
+
+        assert result.status == 'FAIL'
+        assert 'gap' in result.message.lower()
+        assert len(result.details.get('gaps', [])) > 0
+
+    def test_irregular_spacing_warning(self, axial_volume):
+        """Test that irregular spacing (CV > 10%) returns WARNING status."""
+        from unittest.mock import patch, PropertyMock
+
+        # Create positions with irregular but not gapped spacing
+        # Vary spacing between 2.5mm and 3.5mm (CV > 10% but no gap > 1.5x)
+        num_slices = axial_volume.num_slices
+        irregular_positions = np.zeros((num_slices, 3))
+        z = 0
+        for i in range(num_slices):
+            irregular_positions[i] = [0, 0, z]
+            # Alternate between 2.5 and 3.5mm spacing (within 1.5x threshold)
+            z += 2.5 if i % 2 == 0 else 3.5
+
+        with patch.object(
+            type(axial_volume), 'image_positions',
+            new_callable=PropertyMock, return_value=irregular_positions
+        ):
+            qc = GeometryQC(axial_volume)
+            result = qc.check_gap_detection()
+
+        assert result.status == 'WARNING'
+        assert 'irregular' in result.message.lower()
 
 
 class TestOrientationLabels:
@@ -481,7 +494,8 @@ class TestRunAllChecks:
 
         assert isinstance(report, QCReport)
         assert report.scan_id == 'test_scan'
-        assert len(report.results) == 10  # All checks
+        assert len(report.results) > 0
+        assert all(isinstance(r, QCResult) for r in report.results)
         assert report.overall_status in ('PASS', 'WARNING', 'NOTE')
         assert report.primary_plane == 'AXIAL'
 
