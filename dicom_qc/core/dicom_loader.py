@@ -1,7 +1,7 @@
 """DICOM file loading with comprehensive error handling."""
 
 import logging
-from typing import List, Tuple, Optional, Any, Union, Dict
+from typing import List, Tuple, Optional, Any, Union, Dict, Callable, TypeVar
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +22,112 @@ from dicom_qc.utils.errors import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Type variable for generic file type (str path or XNAT file object)
+T = TypeVar('T')
+
+
+def _filter_4d_generic(
+    files: List[T],
+    read_metadata: Callable[[T], Any],
+) -> Tuple[List[T], Optional[int]]:
+    """
+    Detect 4D data and filter to first temporal position (shared logic).
+
+    OPTIMIZED: Uses sampling instead of reading all files. For 1000+ files,
+    this reduces reads from 1000+ to ~100, dramatically improving performance.
+
+    Args:
+        files: List of files (paths or XNAT file objects)
+        read_metadata: Function that reads pydicom dataset from a file
+
+    Returns:
+        Tuple of (filtered_files, num_timepoints)
+        If not 4D, returns (files, None)
+    """
+    if len(files) < 10:
+        return files, None
+
+    # Read first file for NumberOfTemporalPositions
+    first_ds = read_metadata(files[0])
+    if first_ds is None:
+        return files, None
+
+    # Method 1: Check explicit temporal position tags
+    num_temporal = getattr(first_ds, 'NumberOfTemporalPositions', None)
+    if num_temporal is not None and int(num_temporal) > 1:
+        num_temporal = int(num_temporal)
+
+        # Group files by TemporalPositionIdentifier (handles any file order)
+        from typing import Dict
+        temporal_groups: Dict[int, List] = {}
+        for f in files:
+            ds = read_metadata(f)
+            if ds is None:
+                continue
+            temp_pos = getattr(ds, 'TemporalPositionIdentifier', 1)
+            temp_pos = int(temp_pos) if temp_pos else 1
+            if temp_pos not in temporal_groups:
+                temporal_groups[temp_pos] = []
+            temporal_groups[temp_pos].append(f)
+
+        if len(temporal_groups) > 1:
+            first_timepoint = min(temporal_groups.keys())
+            return temporal_groups[first_timepoint], len(temporal_groups)
+
+    # Method 2: Detect by finding duplicate slice locations (OPTIMIZED)
+    sample_size = min(100, len(files))
+    slice_positions = []
+    sampled_files_data = []  # Cache for reuse
+
+    for f in files[:sample_size]:
+        ds = read_metadata(f)
+        if ds is None:
+            continue
+        if hasattr(ds, 'ImagePositionPatient'):
+            pos = tuple(round(float(x), 2) for x in ds.ImagePositionPatient)
+            slice_positions.append(pos)
+            sampled_files_data.append((f, pos, ds.ImagePositionPatient[2]))
+
+    if slice_positions:
+        unique_positions = set(slice_positions)
+        # If many files but few unique positions, likely 4D
+        if len(unique_positions) < len(slice_positions) * 0.5:
+            from collections import Counter
+            pos_counts = Counter(slice_positions)
+            num_unique_slices = len(unique_positions)
+            estimated_timepoints = len(files) // num_unique_slices
+
+            if estimated_timepoints > 1:
+                # Use sampled data first
+                seen_positions = set()
+                file_positions = []
+
+                for f, pos, z in sampled_files_data:
+                    if pos not in seen_positions:
+                        seen_positions.add(pos)
+                        file_positions.append((f, z))
+
+                # Read additional files only if needed
+                if len(seen_positions) < num_unique_slices:
+                    for f in files[sample_size:]:
+                        if len(seen_positions) >= num_unique_slices:
+                            break
+                        ds = read_metadata(f)
+                        if ds is None:
+                            continue
+                        if hasattr(ds, 'ImagePositionPatient'):
+                            pos = tuple(round(float(x), 2) for x in ds.ImagePositionPatient)
+                            if pos not in seen_positions:
+                                seen_positions.add(pos)
+                                file_positions.append((f, ds.ImagePositionPatient[2]))
+
+                if file_positions:
+                    file_positions.sort(key=lambda x: float(x[1]))
+                    first_timepoint_files = [f for f, _ in file_positions]
+                    return first_timepoint_files, estimated_timepoints
+
+    return files, None
 
 
 class DicomLoader:
@@ -55,10 +161,11 @@ class DicomLoader:
 
         Args:
             strict: If True, raise on any error; if False, skip problematic files
+
+        Note: DicomLoader is stateless - errors/warnings are tracked per-load-call
+        and returned via DicomVolume, not stored on the loader instance.
         """
         self.strict = strict
-        self.errors: List[Tuple[str, Exception]] = []
-        self.warnings: List[Tuple[str, str]] = []
 
     def load_from_xnat(self, files: List[Any]) -> DicomVolume:
         """
@@ -87,6 +194,10 @@ class DicomLoader:
         except ImportError:
             raise DicomLoadError("pydicom not installed. Install with: pip install pydicom")
 
+        # Thread-safe: use local variables for errors/warnings
+        errors: List[Tuple[str, Exception]] = []
+        warnings: List[Tuple[str, str]] = []
+
         # Detect 4D data and filter to first timepoint
         files, num_timepoints = self._filter_4d_xnat_files(files)
 
@@ -112,13 +223,13 @@ class DicomLoader:
                             missing_geometry_tags.append('ImageOrientationPatient')
                         if not hasattr(ds, 'ImagePositionPatient') or ds.ImagePositionPatient is None:
                             missing_geometry_tags.append('ImagePositionPatient')
-                    ds = self._validate_and_prepare(ds, file_obj.uri)
+                    ds = self._validate_and_prepare(ds, file_obj.uri, warnings)
                     if ds is not None:
                         datasets.append(ds)
             except Exception as e:
-                self._handle_error(file_obj.uri, e)
+                self._handle_error(file_obj.uri, e, errors)
 
-        volume = self._construct_volume(datasets, len(files))
+        volume = self._construct_volume(datasets, len(files), errors, warnings)
         volume.num_timepoints = num_timepoints
         volume.num_orientations = len(orientations) if orientations else 1
         volume.missing_geometry_tags = missing_geometry_tags
@@ -150,6 +261,10 @@ class DicomLoader:
         path = Path(path)
         if not path.is_dir():
             raise DicomLoadError(f"Path is not a directory: {path}")
+
+        # Thread-safe: use local variables for errors/warnings
+        errors: List[Tuple[str, Exception]] = []
+        warnings: List[Tuple[str, str]] = []
 
         # Get all series IDs in the directory
         series_ids = sitk.ImageSeriesReader.GetGDCMSeriesIDs(str(path))
@@ -246,8 +361,8 @@ class DicomLoader:
             patient_position=patient_position,
             study_instance_uid=study_uid,
             series_instance_uid=selected_series,
-            errors=self.errors,
-            warnings=self.warnings,
+            errors=errors,
+            warnings=warnings,
             num_timepoints=num_timepoints,
             num_orientations=num_orientations,
             missing_geometry_tags=missing_geometry_tags,
@@ -278,6 +393,10 @@ class DicomLoader:
         if not path.is_dir():
             raise DicomLoadError(f"Path is not a directory: {path}")
 
+        # Thread-safe: use local variables for errors/warnings
+        errors: List[Tuple[str, Exception]] = []
+        warnings: List[Tuple[str, str]] = []
+
         # Find DICOM files
         dcm_files = list(path.glob('*.dcm')) + list(path.glob('*.DCM'))
 
@@ -304,7 +423,7 @@ class DicomLoader:
         for dcm_file in dcm_files:
             try:
                 ds = pydicom.dcmread(str(dcm_file))
-                ds = self._validate_and_prepare(ds, str(dcm_file))
+                ds = self._validate_and_prepare(ds, str(dcm_file), warnings)
                 if ds is not None:
                     all_datasets.append(ds)
                     # Group by SeriesInstanceUID
@@ -313,7 +432,7 @@ class DicomLoader:
                         series_groups[uid] = []
                     series_groups[uid].append(ds)
             except Exception as e:
-                self._handle_error(str(dcm_file), e)
+                self._handle_error(str(dcm_file), e, errors)
 
         # If multiple series found, filter to requested or largest
         if len(series_groups) > 1:
@@ -333,7 +452,7 @@ class DicomLoader:
         else:
             datasets = all_datasets
 
-        return self._construct_volume(datasets, len(datasets))
+        return self._construct_volume(datasets, len(datasets), errors, warnings)
 
     def _count_unique_orientations(self, file_names: List[str]) -> int:
         """
@@ -378,165 +497,55 @@ class DicomLoader:
         Returns:
             Tuple of (filtered_files, num_timepoints)
         """
-        if len(files) < 10:
-            return files, None
-
         try:
             import pydicom
         except ImportError:
             return files, None
 
-        # Read metadata from first file to check for temporal info
-        with files[0].open() as f:
-            first_ds = pydicom.dcmread(f, stop_before_pixels=True)
-
-        # Method 1: Check explicit temporal position tags
-        num_temporal = getattr(first_ds, 'NumberOfTemporalPositions', None)
-        if num_temporal is not None and int(num_temporal) > 1:
-            # Group files by TemporalPositionIdentifier
-            temporal_groups: Dict[int, List[Any]] = {}
-            for file_obj in files:
+        def read_xnat_metadata(file_obj):
+            """Read pydicom dataset from XNAT file object."""
+            try:
                 with file_obj.open() as f:
-                    ds = pydicom.dcmread(f, stop_before_pixels=True)
-                temp_pos = getattr(ds, 'TemporalPositionIdentifier', 1)
-                temp_pos = int(temp_pos) if temp_pos else 1
-                if temp_pos not in temporal_groups:
-                    temporal_groups[temp_pos] = []
-                temporal_groups[temp_pos].append(file_obj)
+                    return pydicom.dcmread(f, stop_before_pixels=True)
+            except Exception:
+                return None
 
-            if len(temporal_groups) > 1:
-                first_timepoint = min(temporal_groups.keys())
-                return temporal_groups[first_timepoint], len(temporal_groups)
-
-        # Method 2: Detect by finding duplicate slice locations
-        slice_positions = []
-        sample_size = min(200, len(files))
-        for file_obj in files[:sample_size]:
-            with file_obj.open() as f:
-                ds = pydicom.dcmread(f, stop_before_pixels=True)
-            if hasattr(ds, 'ImagePositionPatient'):
-                pos = tuple(round(float(x), 2) for x in ds.ImagePositionPatient)
-                slice_positions.append(pos)
-
-        if slice_positions:
-            unique_positions = set(slice_positions)
-            if len(unique_positions) < len(slice_positions) * 0.5:
-                from collections import Counter
-                pos_counts = Counter(slice_positions)
-                most_common_count = pos_counts.most_common(1)[0][1]
-
-                if most_common_count > 1:
-                    # Take first occurrence of each position
-                    seen_positions = set()
-                    file_positions = []  # Track positions for sorting
-                    for file_obj in files:
-                        with file_obj.open() as f:
-                            ds = pydicom.dcmread(f, stop_before_pixels=True)
-                        if hasattr(ds, 'ImagePositionPatient'):
-                            pos = tuple(round(float(x), 2) for x in ds.ImagePositionPatient)
-                            if pos not in seen_positions:
-                                seen_positions.add(pos)
-                                file_positions.append((file_obj, ds.ImagePositionPatient[2]))
-
-                    # Sort files by z-position to ensure correct spatial order
-                    if file_positions:
-                        file_positions.sort(key=lambda x: float(x[1]))
-                        first_timepoint_files = [f for f, _ in file_positions]
-
-                        estimated_timepoints = len(files) // len(first_timepoint_files)
-                        if estimated_timepoints > 1:
-                            return first_timepoint_files, estimated_timepoints
-
-        return files, None
+        return _filter_4d_generic(files, read_xnat_metadata)
 
     def _filter_4d_files(self, file_names: List[str]) -> Tuple[List[str], Optional[int]]:
         """
         Detect 4D data and filter to first temporal position.
-
-        For fMRI/DTI/DSC data, SimpleITK stacks all files as slices. This method
-        detects 4D data and returns only files from the first timepoint.
 
         Args:
             file_names: List of DICOM file paths
 
         Returns:
             Tuple of (filtered_files, num_timepoints)
-            If not 4D, returns (file_names, None)
         """
-        if len(file_names) < 10:
-            return file_names, None
-
         try:
             import pydicom
         except ImportError:
             return file_names, None
 
-        # Read metadata from a sample of files to detect 4D
-        # Check first file for NumberOfTemporalPositions
-        first_ds = pydicom.dcmread(file_names[0], stop_before_pixels=True)
+        def read_file_metadata(path):
+            """Read pydicom dataset from file path."""
+            try:
+                return pydicom.dcmread(path, stop_before_pixels=True)
+            except Exception:
+                return None
 
-        # Method 1: Check explicit temporal position tags
-        num_temporal = getattr(first_ds, 'NumberOfTemporalPositions', None)
-        if num_temporal is not None and int(num_temporal) > 1:
-            # Group files by TemporalPositionIdentifier
-            temporal_groups: Dict[int, List[str]] = {}
-            for f in file_names:
-                ds = pydicom.dcmread(f, stop_before_pixels=True)
-                temp_pos = getattr(ds, 'TemporalPositionIdentifier', 1)
-                temp_pos = int(temp_pos) if temp_pos else 1
-                if temp_pos not in temporal_groups:
-                    temporal_groups[temp_pos] = []
-                temporal_groups[temp_pos].append(f)
+        return _filter_4d_generic(file_names, read_file_metadata)
 
-            if len(temporal_groups) > 1:
-                first_timepoint = min(temporal_groups.keys())
-                return temporal_groups[first_timepoint], len(temporal_groups)
+    def _validate_and_prepare(
+        self, ds: Any, filename: str, warnings: List[Tuple[str, str]]
+    ) -> Optional[Any]:
+        """Validate required tags and prepare dataset.
 
-        # Method 2: Detect by finding duplicate slice locations
-        # fMRI has same slice positions repeated for each timepoint
-        slice_positions = []
-        for f in file_names[:min(200, len(file_names))]:  # Sample first 200 files
-            ds = pydicom.dcmread(f, stop_before_pixels=True)
-            if hasattr(ds, 'ImagePositionPatient'):
-                pos = tuple(round(float(x), 2) for x in ds.ImagePositionPatient)
-                slice_positions.append(pos)
-
-        if slice_positions:
-            unique_positions = set(slice_positions)
-            # If we have many files but few unique positions, it's likely 4D
-            if len(unique_positions) < len(slice_positions) * 0.5:
-                # Count how many times each position appears
-                from collections import Counter
-                pos_counts = Counter(slice_positions)
-                # Number of timepoints = most common repetition count
-                most_common_count = pos_counts.most_common(1)[0][1]
-
-                if most_common_count > 1:
-                    # Group files by slice position, take first occurrence of each
-                    seen_positions = set()
-                    file_positions = []  # Track positions for sorting
-                    for f in file_names:
-                        ds = pydicom.dcmread(f, stop_before_pixels=True)
-                        if hasattr(ds, 'ImagePositionPatient'):
-                            pos = tuple(round(float(x), 2) for x in ds.ImagePositionPatient)
-                            if pos not in seen_positions:
-                                seen_positions.add(pos)
-                                # Store z-position for sorting
-                                file_positions.append((f, ds.ImagePositionPatient[2]))
-
-                    # Sort files by z-position to ensure correct spatial order
-                    if file_positions:
-                        file_positions.sort(key=lambda x: float(x[1]))
-                        first_timepoint_files = [f for f, _ in file_positions]
-
-                        estimated_timepoints = len(file_names) // len(first_timepoint_files)
-                        if estimated_timepoints > 1:
-                            return first_timepoint_files, estimated_timepoints
-
-        return file_names, None
-
-    def _validate_and_prepare(self, ds: Any, filename: str) -> Optional[Any]:
-        """Validate required tags and prepare dataset."""
+        Args:
+            ds: pydicom Dataset
+            filename: Source filename for error reporting
+            warnings: List to append warnings to (thread-safe local variable)
+        """
         try:
             import pydicom
         except ImportError:
@@ -554,27 +563,48 @@ class DicomLoader:
         # Check optional tags and warn
         for tag in self.OPTIONAL_TAGS:
             if not hasattr(ds, tag) or getattr(ds, tag) is None:
-                self.warnings.append((filename, f"Missing optional tag: {tag}"))
+                warnings.append((filename, f"Missing optional tag: {tag}"))
 
         # Skip derived/secondary captures that might not be image slices
         if hasattr(ds, 'ImageType'):
             image_type = list(ds.ImageType) if hasattr(ds.ImageType, '__iter__') else [ds.ImageType]
             if 'DERIVED' in image_type and 'SECONDARY' in image_type:
-                self.warnings.append((filename, "Skipping derived/secondary image"))
+                warnings.append((filename, "Skipping derived/secondary image"))
                 return None
 
         return ds
 
-    def _handle_error(self, filename: str, error: Exception) -> None:
-        """Handle loading error based on strict mode."""
-        self.errors.append((filename, error))
+    def _handle_error(
+        self, filename: str, error: Exception, errors: List[Tuple[str, Exception]]
+    ) -> None:
+        """Handle loading error based on strict mode.
+
+        Args:
+            filename: Source filename for error reporting
+            error: The exception that occurred
+            errors: List to append errors to (thread-safe local variable)
+        """
+        errors.append((filename, error))
         logger.warning(f"Error loading {filename}: {error}")
 
         if self.strict:
             raise error
 
-    def _construct_volume(self, datasets: List[Any], total_files: int) -> DicomVolume:
-        """Construct DicomVolume from sorted datasets."""
+    def _construct_volume(
+        self,
+        datasets: List[Any],
+        total_files: int,
+        errors: List[Tuple[str, Exception]],
+        warnings: List[Tuple[str, str]],
+    ) -> DicomVolume:
+        """Construct DicomVolume from sorted datasets.
+
+        Args:
+            datasets: List of pydicom Datasets
+            total_files: Total number of files attempted
+            errors: List of loading errors (thread-safe local variable)
+            warnings: List of loading warnings (thread-safe local variable)
+        """
         if not datasets:
             raise DicomLoadError("No valid DICOM files could be loaded")
 
@@ -639,8 +669,8 @@ class DicomLoader:
             patient_position=patient_position,
             study_instance_uid=study_uid,
             series_instance_uid=series_uid,
-            errors=self.errors,
-            warnings=self.warnings,
+            errors=errors,
+            warnings=warnings,
         )
 
     def _build_sitk_image(

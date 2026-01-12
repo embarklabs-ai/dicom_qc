@@ -1,5 +1,7 @@
 """Quickcheck module for efficient batch review of DICOM data."""
 
+import hashlib
+import os
 import time
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -105,6 +107,8 @@ class SeriesInfo:
     _file_paths: List[str] = field(default_factory=list)  # Local file paths (if mounted)
     _scan_uri: Optional[str] = None  # Scan URI for restoring access
     xnat_scan_id: Optional[str] = None  # XNAT scan ID (only in XNAT mode)
+    _xnat_subject_label: Optional[str] = None  # XNAT subject label (for thumbnail naming)
+    _xnat_session_label: Optional[str] = None  # XNAT session label (for thumbnail naming)
     # Derived data fields (RTStruct, SEG, etc.)
     is_derived: bool = False
     referenced_series_uid: Optional[str] = None  # SeriesInstanceUID of referenced images
@@ -364,9 +368,12 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                 # Track series missing file URIs (file listing failed during discovery)
                 if not series._file_uris:
                     missing_uris_count += 1
-                # Clear non-picklable objects (MUST clear for pickle to work)
-                series.files = []
-                series._scan_obj = None
+                # Only clear files for COMPLETED series (has thumbnail, qc_report, error, or is_derived)
+                # This allows parallel processing to continue using files for pending series
+                is_complete = series.thumbnail or series._thumbnail_path or series.qc_report or series.error or series.is_derived
+                if is_complete:
+                    series.files = []
+                    series._scan_obj = None
 
         # Migrate thumbnails to disk cache if available (frees memory)
         if self._thumb_cache:
@@ -386,8 +393,25 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             '_use_db': self._use_db,  # Track if scaled mode was used
         }
 
-        with open(self._save_path, 'wb') as f:
-            pickle.dump(save_data, f)
+        # Atomic save: write to temp file, then rename (prevents corruption on interrupt)
+        import tempfile
+        temp_fd, temp_path = tempfile.mkstemp(
+            dir=self._save_path.parent,
+            prefix='.qc_state_',
+            suffix='.tmp'
+        )
+        try:
+            with os.fdopen(temp_fd, 'wb') as f:
+                pickle.dump(save_data, f)
+            # Atomic rename (on POSIX systems)
+            os.replace(temp_path, self._save_path)
+        except Exception:
+            # Clean up temp file on error
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+            raise
 
         return self._save_path
 
@@ -525,8 +549,22 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         if delete_storage and self.data_dir:
             storage_dir = Path(self.data_dir) / '_dicom_qc'
             if storage_dir.exists():
-                shutil.rmtree(storage_dir)
-                print(f"Deleted storage: {storage_dir}")
+                # Use ignore_errors for NFS filesystems with lock files
+                shutil.rmtree(storage_dir, ignore_errors=True)
+                # If directory still exists (NFS locks), at least clear the contents we can
+                if storage_dir.exists():
+                    for item in storage_dir.iterdir():
+                        if not item.name.startswith('.nfs'):
+                            try:
+                                if item.is_dir():
+                                    shutil.rmtree(item, ignore_errors=True)
+                                else:
+                                    item.unlink()
+                            except OSError:
+                                pass
+                    print(f"Cleared storage: {storage_dir} (some NFS lock files may remain)")
+                else:
+                    print(f"Deleted storage: {storage_dir}")
 
         if delete_storage and self._save_path and Path(self._save_path).exists():
             Path(self._save_path).unlink()
@@ -640,7 +678,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         return self.patients
 
-    def discover_xnat(self, project: Any, interactive: bool = True, refresh: bool = True, read_dicom: bool = False) -> Dict[str, PatientInfo]:
+    def discover_xnat(self, project: Any, interactive: bool = True, refresh: bool = True, read_dicom: bool = False, parallel: bool = None, max_workers: int = 8) -> Dict[str, PatientInfo]:
         """Discover DICOM series from an XNAT project.
 
         Uses XNAT hierarchy (subject/session/scan) instead of DICOM headers.
@@ -652,6 +690,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                      If False, only add new subjects/sessions/scans (incremental).
             read_dicom: If True, read first DICOM file to get accurate metadata.
                        If False (default), use only XNAT metadata (much faster).
+            parallel: If True, use parallel discovery for faster throughput.
+                     If None, auto-enable for >10 subjects.
+            max_workers: Number of parallel workers. Default: 8.
 
         Returns:
             Dict of PatientInfo keyed by subject label
@@ -710,89 +751,96 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         total_scans = 0
         scans_per_subject = []  # Track for estimating progress
 
-        for subj_idx, subject in enumerate(subjects):
+        # Auto-enable parallelism for projects with many subjects
+        if parallel is None:
+            parallel = total_subjects > 2
+
+        # For parallel mode, take a snapshot of existing patients to avoid race conditions
+        existing_patients_snapshot = dict(self.patients) if not refresh else {}
+
+        # Helper function to discover a single subject
+        def discover_subject(subject):
+            """Discover all sessions and scans for a single subject."""
             subject_label = subject.label
-            subject_scan_count = 0
+            subject_sessions = 0
+            subject_scans = 0
             subject_new_scans = 0
+            subject_skipped = 0
 
-            if subject_label not in self.patients:
-                # Get internal XNAT subject ID
+            # Get or create patient (use snapshot for thread safety)
+            if subject_label in existing_patients_snapshot:
+                # Copy existing patient to avoid modifying shared state
+                existing = existing_patients_snapshot[subject_label]
+                patient = PatientInfo(
+                    subject_label,
+                    existing.patient_name,
+                    xnat_subject_id=existing.xnat_subject_id or getattr(subject, 'id', None)
+                )
+                # Copy existing studies
+                for study_key, study in existing.studies.items():
+                    patient.studies[study_key] = StudyInfo(
+                        uid=study.uid,
+                        date=study.date,
+                        description=study.description,
+                        xnat_session_label=study.xnat_session_label,
+                        xnat_experiment_id=study.xnat_experiment_id,
+                    )
+                    # Copy existing series
+                    for series_key, series in study.series.items():
+                        patient.studies[study_key].series[series_key] = series
+            else:
                 xnat_subj_id = getattr(subject, 'id', None)
-                self.patients[subject_label] = PatientInfo(subject_label, '', xnat_subject_id=xnat_subj_id)
-            elif self.patients[subject_label].xnat_subject_id is None:
-                # Update missing XNAT subject ID (e.g., from old save file)
-                self.patients[subject_label].xnat_subject_id = getattr(subject, 'id', None)
+                patient = PatientInfo(subject_label, '', xnat_subject_id=xnat_subj_id)
 
-            # Get experiments with retry for transient errors
+            # Get experiments with retry
             try:
                 experiments = _xnat_retry(lambda: list(subject.experiments.values()))
-            except Exception as e:
-                # Skip subject if we can't access its experiments
-                continue
+            except Exception:
+                return subject_label, patient, subject_sessions, subject_scans, subject_new_scans, subject_skipped
 
             for experiment in experiments:
                 session_label = experiment.label
-                total_sessions += 1
+                subject_sessions += 1
 
-                if session_label not in self.patients[subject_label].studies:
-                    # Get internal XNAT experiment ID
+                if session_label not in patient.studies:
                     xnat_exp_id = getattr(experiment, 'id', None)
-                    self.patients[subject_label].studies[session_label] = StudyInfo(
-                        uid='',  # Will be set from DICOM if available
+                    patient.studies[session_label] = StudyInfo(
+                        uid='',
                         date='',
                         description=session_label,
                         xnat_session_label=session_label,
                         xnat_experiment_id=xnat_exp_id,
                     )
-                elif self.patients[subject_label].studies[session_label].xnat_experiment_id is None:
-                    # Update missing XNAT experiment ID (e.g., from old save file)
-                    self.patients[subject_label].studies[session_label].xnat_experiment_id = getattr(experiment, 'id', None)
+                elif patient.studies[session_label].xnat_experiment_id is None:
+                    patient.studies[session_label].xnat_experiment_id = getattr(experiment, 'id', None)
 
-                # Get scans with retry for transient errors
+                study = patient.studies[session_label]
+
+                # Get scans with retry
                 try:
                     scans = _xnat_retry(lambda: list(experiment.scans.values()))
-                except Exception as e:
-                    # Skip session if we can't access its scans
+                except Exception:
                     continue
 
                 for scan in scans:
                     scan_id = scan.id
-                    total_scans += 1
-                    subject_scan_count += 1
+                    subject_scans += 1
 
-                    # Update progress per scan - estimate progress within current subject
-                    if progress_widget:
-                        # Estimate: use avg scans/subject to calculate sub-progress
-                        if scans_per_subject:
-                            avg_scans = sum(scans_per_subject) / len(scans_per_subject)
-                            # Progress = completed subjects + fraction of current subject
-                            sub_progress = min(subject_scan_count / max(avg_scans, 1), 1.0)
-                        else:
-                            # First subject: assume we're partway through
-                            sub_progress = min(subject_scan_count / 100, 0.9)  # Cap at 90% until we know more
-
-                        progress_pct = ((subj_idx + sub_progress) / total_subjects) * 100
-                        progress_widget.value = progress_pct
-                        status_widget.value = f'<div style="font-family:monospace;">{subj_idx}/{total_subjects} subjects | {total_sessions} sessions | {total_scans} scans<br><span style="color:#888">{subject_label} / {session_label} / scan {scan_id}</span></div>'
-
-                    # Skip existing scans in incremental mode (unless missing file URIs)
-                    study = self.patients[subject_label].studies[session_label]
+                    # Skip existing scans in incremental mode
                     if not refresh and scan_id in study.series:
                         existing = study.series[scan_id]
                         if existing._file_uris:
-                            skipped_scans += 1
+                            subject_skipped += 1
                             continue
-                        # Series exists but missing file URIs - re-fetch them (with retry)
+                        # Re-fetch missing file URIs
                         try:
                             def fetch_existing_files():
                                 all_files = []
                                 for res in scan.resources.values():
-                                    # Exclude SNAPSHOTS resource
                                     res_label = getattr(res, 'label', '').upper()
                                     if res_label != 'SNAPSHOTS':
                                         all_files.extend(res.files.values())
                                 return all_files
-
                             all_files = _xnat_retry(fetch_existing_files)
                             if all_files:
                                 existing._file_uris = [f.uri for f in all_files]
@@ -801,56 +849,411 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                                 existing.error = "No DICOM files in XNAT resources"
                         except Exception as e:
                             existing.error = f"Failed to fetch files: {e}"
-                        skipped_scans += 1
+                        subject_skipped += 1
                         continue
 
-                    new_scans += 1
                     subject_new_scans += 1
 
-                    # Get metadata from XNAT (with retry for transient errors)
+                    # Get metadata from XNAT
                     try:
                         series_desc = _xnat_retry(lambda: getattr(scan, 'series_description', '') or '')
                         modality = _xnat_retry(lambda: getattr(scan, 'modality', '??') or '??')
                     except Exception:
-                        # Fallback if metadata fetch fails entirely
                         series_desc = ''
                         modality = '??'
 
                     series = SeriesInfo(
-                        uid='',  # Will be set during processing
+                        uid='',
                         series_number=scan_id,
                         description=series_desc,
                         modality=modality,
                         xnat_scan_id=scan_id,
+                        _xnat_subject_label=subject_label,
+                        _xnat_session_label=session_label,
                     )
                     series._xnat_files = True
 
-                    # Fetch and store file URIs and local paths now (enables save/load without re-discovery)
+                    # Fetch file URIs and paths
                     try:
                         def fetch_files():
                             all_files = []
                             for res in scan.resources.values():
-                                # Exclude SNAPSHOTS resource
                                 res_label = getattr(res, 'label', '').upper()
                                 if res_label != 'SNAPSHOTS':
                                     all_files.extend(res.files.values())
                             return all_files
-
                         all_files = _xnat_retry(fetch_files)
                         series._file_uris = [f.uri for f in all_files]
                         series._file_paths = [getattr(f, 'data_path', None) or '' for f in all_files]
                     except Exception:
-                        # Store scan object as fallback if file listing fails
                         series._scan_obj = scan
 
                     study.series[scan_id] = series
 
-            # Track scans per subject for progress estimation
-            scans_per_subject.append(subject_scan_count)
+            return subject_label, patient, subject_sessions, subject_scans, subject_new_scans, subject_skipped
 
-            # Save after each subject with new scans (file listing is slow, preserve progress)
-            if self._save_path and subject_new_scans > 0:
+        if parallel and max_workers > 1:
+            # Parallel discovery with per-scan updates (mirrors process_all pattern)
+            from concurrent.futures import ThreadPoolExecutor
+            import threading
+            import asyncio
+
+            lock = threading.Lock()
+
+            # Phase 1: Collect all scan tasks sequentially (fast - just XNAT hierarchy)
+            scan_tasks = []  # List of (subject_label, session_label, scan, study_ref) tuples
+
+            if progress_widget:
+                status_widget.value = f'<div style="font-family:monospace;">Collecting scan list from {total_subjects} subjects...</div>'
+
+            for subject in subjects:
+                subject_label = subject.label
+
+                # Ensure patient exists
+                if subject_label not in self.patients:
+                    xnat_subj_id = getattr(subject, 'id', None)
+                    self.patients[subject_label] = PatientInfo(subject_label, '', xnat_subject_id=xnat_subj_id)
+                elif self.patients[subject_label].xnat_subject_id is None:
+                    self.patients[subject_label].xnat_subject_id = getattr(subject, 'id', None)
+
+                # Get experiments
+                try:
+                    experiments = _xnat_retry(lambda: list(subject.experiments.values()))
+                except Exception:
+                    continue
+
+                for experiment in experiments:
+                    session_label = experiment.label
+                    total_sessions += 1
+
+                    # Ensure study exists
+                    if session_label not in self.patients[subject_label].studies:
+                        xnat_exp_id = getattr(experiment, 'id', None)
+                        self.patients[subject_label].studies[session_label] = StudyInfo(
+                            uid='',
+                            date='',
+                            description=session_label,
+                            xnat_session_label=session_label,
+                            xnat_experiment_id=xnat_exp_id,
+                        )
+                    elif self.patients[subject_label].studies[session_label].xnat_experiment_id is None:
+                        self.patients[subject_label].studies[session_label].xnat_experiment_id = getattr(experiment, 'id', None)
+
+                    study = self.patients[subject_label].studies[session_label]
+
+                    # Get scans
+                    try:
+                        scans = _xnat_retry(lambda: list(experiment.scans.values()))
+                    except Exception:
+                        continue
+
+                    for scan in scans:
+                        scan_id = scan.id
+                        total_scans += 1
+
+                        # Skip existing scans in incremental mode
+                        if not refresh and scan_id in study.series:
+                            existing = study.series[scan_id]
+                            if existing._file_uris:
+                                skipped_scans += 1
+                                continue
+
+                        # Add to task list for parallel processing
+                        scan_tasks.append((subject_label, session_label, scan, study))
+
+            # Phase 2: Process each scan in parallel with per-scan UI updates
+            total_scan_tasks = len(scan_tasks)
+            processed_count = [0]
+
+            if progress_widget:
+                progress_widget.value = 0
+                status_widget.value = f'<div style="font-family:monospace;">0/{total_scan_tasks} scans | {total_sessions} sessions | {total_subjects} subjects</div>'
+
+            def process_scan(task):
+                """Process a single scan (thread-safe)."""
+                subject_label, session_label, scan, study = task
+                scan_id = scan.id
+
+                # Get metadata from XNAT
+                try:
+                    series_desc = _xnat_retry(lambda: getattr(scan, 'series_description', '') or '')
+                    modality = _xnat_retry(lambda: getattr(scan, 'modality', '??') or '??')
+                except Exception:
+                    series_desc = ''
+                    modality = '??'
+
+                series = SeriesInfo(
+                    uid='',
+                    series_number=scan_id,
+                    description=series_desc,
+                    modality=modality,
+                    xnat_scan_id=scan_id,
+                    _xnat_subject_label=subject_label,
+                    _xnat_session_label=session_label,
+                )
+                series._xnat_files = True
+
+                # Fetch file URIs and paths (the slow part)
+                try:
+                    def fetch_files():
+                        all_files = []
+                        for res in scan.resources.values():
+                            res_label = getattr(res, 'label', '').upper()
+                            if res_label != 'SNAPSHOTS':
+                                all_files.extend(res.files.values())
+                        return all_files
+                    all_files = _xnat_retry(fetch_files)
+                    series._file_uris = [f.uri for f in all_files]
+                    series._file_paths = [getattr(f, 'data_path', None) or '' for f in all_files]
+                except Exception:
+                    series._scan_obj = scan
+
+                return subject_label, session_label, scan_id, series
+
+            # Use asyncio pattern like process_all for responsive updates
+            async def run_parallel():
+                nonlocal new_scans
+                loop = asyncio.get_running_loop()
+
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    pending_futures = {
+                        loop.run_in_executor(executor, process_scan, task): task
+                        for task in scan_tasks
+                    }
+
+                    while pending_futures:
+                        done, pending = await asyncio.wait(
+                            pending_futures.keys(),
+                            timeout=0.3,
+                            return_when=asyncio.FIRST_COMPLETED
+                        )
+
+                        for future in done:
+                            task = pending_futures.pop(future)
+                            subject_label, session_label, _, _ = task
+                            try:
+                                subj_label, sess_label, scan_id, series = await future
+
+                                with lock:
+                                    # Add series to study
+                                    self.patients[subj_label].studies[sess_label].series[scan_id] = series
+                                    new_scans += 1
+                                    processed_count[0] += 1
+
+                                    # Update progress
+                                    if progress_widget:
+                                        progress_pct = (processed_count[0] / total_scan_tasks) * 100
+                                        progress_widget.value = progress_pct
+                                        status_widget.value = (
+                                            f'<div style="font-family:monospace;">'
+                                            f'{processed_count[0]}/{total_scan_tasks} scans | {total_sessions} sessions | {total_subjects} subjects<br>'
+                                            f'<span style="color:#888">{subj_label} / {sess_label} / scan {scan_id}</span></div>'
+                                        )
+
+                            except Exception:
+                                with lock:
+                                    processed_count[0] += 1
+
+                        # Yield to event loop for widget updates
+                        await asyncio.sleep(0.01)
+
+            # Fallback for when asyncio doesn't work
+            def run_with_fallback():
+                nonlocal new_scans
+                from concurrent.futures import as_completed
+
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(process_scan, task): task for task in scan_tasks}
+
+                    for future in as_completed(futures):
+                        task = futures[future]
+                        subject_label, session_label, _, _ = task
+                        try:
+                            subj_label, sess_label, scan_id, series = future.result()
+
+                            with lock:
+                                self.patients[subj_label].studies[sess_label].series[scan_id] = series
+                                new_scans += 1
+                                processed_count[0] += 1
+
+                                if progress_widget:
+                                    progress_pct = (processed_count[0] / total_scan_tasks) * 100
+                                    progress_widget.value = progress_pct
+                                    status_widget.value = (
+                                        f'<div style="font-family:monospace;">'
+                                        f'{processed_count[0]}/{total_scan_tasks} scans | {total_sessions} sessions | {total_subjects} subjects<br>'
+                                        f'<span style="color:#888">{subj_label} / {sess_label} / scan {scan_id}</span></div>'
+                                    )
+
+                        except Exception:
+                            with lock:
+                                processed_count[0] += 1
+
+            # Run with asyncio if possible, fallback otherwise
+            try:
+                try:
+                    loop = asyncio.get_running_loop()
+                    import nest_asyncio
+                    nest_asyncio.apply()
+                    loop.run_until_complete(run_parallel())
+                except RuntimeError:
+                    asyncio.run(run_parallel())
+            except ImportError:
+                run_with_fallback()
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                run_with_fallback()
+
+            # Save once at end
+            if self._save_path and new_scans > 0:
                 self.save()
+
+        else:
+            # Sequential discovery (original behavior)
+            for subj_idx, subject in enumerate(subjects):
+                subject_label = subject.label
+                subject_scan_count = 0
+                subject_new_scans = 0
+
+                if subject_label not in self.patients:
+                    # Get internal XNAT subject ID
+                    xnat_subj_id = getattr(subject, 'id', None)
+                    self.patients[subject_label] = PatientInfo(subject_label, '', xnat_subject_id=xnat_subj_id)
+                elif self.patients[subject_label].xnat_subject_id is None:
+                    # Update missing XNAT subject ID (e.g., from old save file)
+                    self.patients[subject_label].xnat_subject_id = getattr(subject, 'id', None)
+
+                # Get experiments with retry for transient errors
+                try:
+                    experiments = _xnat_retry(lambda: list(subject.experiments.values()))
+                except Exception as e:
+                    # Skip subject if we can't access its experiments
+                    continue
+
+                for experiment in experiments:
+                    session_label = experiment.label
+                    total_sessions += 1
+
+                    if session_label not in self.patients[subject_label].studies:
+                        # Get internal XNAT experiment ID
+                        xnat_exp_id = getattr(experiment, 'id', None)
+                        self.patients[subject_label].studies[session_label] = StudyInfo(
+                            uid='',  # Will be set from DICOM if available
+                            date='',
+                            description=session_label,
+                            xnat_session_label=session_label,
+                            xnat_experiment_id=xnat_exp_id,
+                        )
+                    elif self.patients[subject_label].studies[session_label].xnat_experiment_id is None:
+                        # Update missing XNAT experiment ID (e.g., from old save file)
+                        self.patients[subject_label].studies[session_label].xnat_experiment_id = getattr(experiment, 'id', None)
+
+                    # Get scans with retry for transient errors
+                    try:
+                        scans = _xnat_retry(lambda: list(experiment.scans.values()))
+                    except Exception as e:
+                        # Skip session if we can't access its scans
+                        continue
+
+                    for scan in scans:
+                        scan_id = scan.id
+                        total_scans += 1
+                        subject_scan_count += 1
+
+                        # Update progress per scan - estimate progress within current subject
+                        if progress_widget:
+                            # Estimate: use avg scans/subject to calculate sub-progress
+                            if scans_per_subject:
+                                avg_scans = sum(scans_per_subject) / len(scans_per_subject)
+                                # Progress = completed subjects + fraction of current subject
+                                sub_progress = min(subject_scan_count / max(avg_scans, 1), 1.0)
+                            else:
+                                # First subject: assume we're partway through
+                                sub_progress = min(subject_scan_count / 100, 0.9)  # Cap at 90% until we know more
+
+                            progress_pct = ((subj_idx + sub_progress) / total_subjects) * 100
+                            progress_widget.value = progress_pct
+                            status_widget.value = f'<div style="font-family:monospace;">{subj_idx}/{total_subjects} subjects | {total_sessions} sessions | {total_scans} scans<br><span style="color:#888">{subject_label} / {session_label} / scan {scan_id}</span></div>'
+
+                        # Skip existing scans in incremental mode (unless missing file URIs)
+                        study = self.patients[subject_label].studies[session_label]
+                        if not refresh and scan_id in study.series:
+                            existing = study.series[scan_id]
+                            if existing._file_uris:
+                                skipped_scans += 1
+                                continue
+                            # Series exists but missing file URIs - re-fetch them (with retry)
+                            try:
+                                def fetch_existing_files():
+                                    all_files = []
+                                    for res in scan.resources.values():
+                                        # Exclude SNAPSHOTS resource
+                                        res_label = getattr(res, 'label', '').upper()
+                                        if res_label != 'SNAPSHOTS':
+                                            all_files.extend(res.files.values())
+                                    return all_files
+
+                                all_files = _xnat_retry(fetch_existing_files)
+                                if all_files:
+                                    existing._file_uris = [f.uri for f in all_files]
+                                    existing._file_paths = [getattr(f, 'data_path', None) or '' for f in all_files]
+                                else:
+                                    existing.error = "No DICOM files in XNAT resources"
+                            except Exception as e:
+                                existing.error = f"Failed to fetch files: {e}"
+                            skipped_scans += 1
+                            continue
+
+                        new_scans += 1
+                        subject_new_scans += 1
+
+                        # Get metadata from XNAT (with retry for transient errors)
+                        try:
+                            series_desc = _xnat_retry(lambda: getattr(scan, 'series_description', '') or '')
+                            modality = _xnat_retry(lambda: getattr(scan, 'modality', '??') or '??')
+                        except Exception:
+                            # Fallback if metadata fetch fails entirely
+                            series_desc = ''
+                            modality = '??'
+
+                        series = SeriesInfo(
+                            uid='',  # Will be set during processing
+                            series_number=scan_id,
+                            description=series_desc,
+                            modality=modality,
+                            xnat_scan_id=scan_id,
+                            _xnat_subject_label=subject_label,
+                            _xnat_session_label=session_label,
+                        )
+                        series._xnat_files = True
+
+                        # Fetch and store file URIs and local paths now (enables save/load without re-discovery)
+                        try:
+                            def fetch_files():
+                                all_files = []
+                                for res in scan.resources.values():
+                                    # Exclude SNAPSHOTS resource
+                                    res_label = getattr(res, 'label', '').upper()
+                                    if res_label != 'SNAPSHOTS':
+                                        all_files.extend(res.files.values())
+                                return all_files
+
+                            all_files = _xnat_retry(fetch_files)
+                            series._file_uris = [f.uri for f in all_files]
+                            series._file_paths = [getattr(f, 'data_path', None) or '' for f in all_files]
+                        except Exception:
+                            # Store scan object as fallback if file listing fails
+                            series._scan_obj = scan
+
+                        study.series[scan_id] = series
+
+                # Track scans per subject for progress estimation
+                scans_per_subject.append(subject_scan_count)
+
+                # Save after each subject with new scans (file listing is slow, preserve progress)
+                if self._save_path and subject_new_scans > 0:
+                    self.save()
 
         # Final progress update
         if progress_widget:
@@ -1198,6 +1601,14 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                     series_dir, series_uid=series.uid
                 )
 
+            # Update series UID from volume if not set (XNAT mode initializes to '')
+            if not series.uid:
+                if volume.series_instance_uid:
+                    series.uid = volume.series_instance_uid
+                elif series._file_uris:
+                    # Fallback: use first file URI as unique identifier (contains full XNAT path)
+                    series.uid = hashlib.sha256(series._file_uris[0].encode()).hexdigest()
+
             qc = GeometryQC(volume)
             series.qc_report = qc.run_all_checks(series.description)
 
@@ -1210,9 +1621,20 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             # Generate thumbnail - use disk cache if available (saves memory)
             snapshot_gen = SnapshotGenerator(volume)
             if self._thumb_cache:
-                thumb_path = self._thumb_cache.get_path_for_series(series.uid)
-                snapshot_gen.create_tripane_thumbnail_file(thumb_path)
-                series._thumbnail_path = self._thumb_cache.get_relative_path(series.uid)
+                # Use human-readable paths for XNAT scans
+                if series._xnat_subject_label and series._xnat_session_label and series.xnat_scan_id:
+                    thumb_path = self._thumb_cache.get_path_for_xnat(
+                        series._xnat_subject_label, series._xnat_session_label, series.xnat_scan_id
+                    )
+                    snapshot_gen.create_tripane_thumbnail_file(thumb_path)
+                    series._thumbnail_path = self._thumb_cache.get_relative_path_xnat(
+                        series._xnat_subject_label, series._xnat_session_label, series.xnat_scan_id
+                    )
+                else:
+                    # Fallback to hash-based path for local data
+                    thumb_path = self._thumb_cache.get_path_for_series(series.uid)
+                    snapshot_gen.create_tripane_thumbnail_file(thumb_path)
+                    series._thumbnail_path = self._thumb_cache.get_relative_path(series.uid)
                 series.thumbnail = None  # Don't store base64 in memory
             else:
                 series.thumbnail = snapshot_gen.create_tripane_thumbnail()
@@ -1654,7 +2076,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         if parallel and max_workers > 1:
             # Parallel processing with ThreadPoolExecutor
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from concurrent.futures import ThreadPoolExecutor, as_completed, FIRST_COMPLETED, wait
             import threading
 
             processed_count = [0]
@@ -1665,44 +2087,162 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                 self.process_series(series)
                 return series
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit all jobs
-                future_to_series = {executor.submit(process_one, s): s for s in to_process}
+            # Use asyncio for non-blocking parallel processing
+            # This allows Jupyter's event loop to process widget updates
+            import asyncio
 
-                for future in as_completed(future_to_series):
-                    series = future_to_series[future]
-                    try:
-                        future.result()
-                    except Exception as e:
-                        series.error = str(e)
+            async def run_parallel():
+                loop = asyncio.get_running_loop()
+                nonlocal processed_count
 
-                    with lock:
-                        processed_count[0] += 1
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # Submit all jobs to thread pool, get futures
+                    pending_futures = {
+                        loop.run_in_executor(executor, process_one, s): s
+                        for s in to_process
+                    }
+                    last_update = time.time()
+
+                    while pending_futures:
+                        # Wait for at least one to complete, with timeout for UI updates
+                        done, pending = await asyncio.wait(
+                            pending_futures.keys(),
+                            timeout=0.5,
+                            return_when=asyncio.FIRST_COMPLETED
+                        )
+
+                        for future in done:
+                            series = pending_futures.pop(future)
+                            try:
+                                await future  # Get result/raise exception
+                            except Exception as e:
+                                series.error = str(e)
+
+                            with lock:
+                                processed_count[0] += 1
+                                i = processed_count[0]
+
+                                series_time = time.time() - start_time
+                                recent_times.append(series_time / i if i > 0 else 0)
+
+                                # Update displays
+                                update_status(i, series)
+                                status_map_html.value = render_status_map()
+
+                                # Only show thumbnails for first few series
+                                if thumbs_shown[0] < max_thumbs_to_show:
+                                    if series._thumbnail_path and self._thumb_cache:
+                                        recent_thumb_cache[series.uid] = self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
+                                    elif series.thumbnail:
+                                        recent_thumb_cache[series.uid] = series.thumbnail
+                                    recent_series.append(series)
+                                    if len(recent_series) > max_recent:
+                                        old = recent_series.pop(0)
+                                        recent_thumb_cache.pop(old.uid, None)
+                                    thumbs_shown[0] += 1
+                                    recent_thumbs_html.value = render_recent_thumbs()
+
+                                # Periodic save
+                                if save_interval > 0 and i % save_interval == 0 and self._save_path:
+                                    self.save()
+
+                            last_update = time.time()
+
+                        # Heartbeat: update elapsed time even when no futures complete
+                        now = time.time()
+                        if now - last_update > 1.0 and pending_futures:
+                            elapsed = now - start_time
+                            i = processed_count[0]
+                            remaining = len(pending_futures)
+                            current_series_html.value = (
+                                f"<div style='color:#666;font-size:12px;'>"
+                                f"Processing ({remaining} remaining)...</div>"
+                            )
+                            progress_bar.value = i
+                            pct = (i / total) * 100 if total > 0 else 0
+                            counts = self.get_summary()
+                            c = self.STATUS_COLORS
+                            status_parts = [
+                                f"<b>{i}/{total}</b> ({pct:.0f}%)",
+                                f"Elapsed: {format_time(elapsed)}",
+                                "Processing...",
+                                "|",
+                                f"<span style='color:{c['PASS']}'>✓{counts['PASS']}</span>",
+                                f"<span style='color:{c['WARNING']}'>⚠{counts['WARNING']}</span>",
+                                f"<span style='color:{c['FAIL']}'>✗{counts['FAIL']}</span>",
+                                f"<span style='color:{c['ERROR']}'>⊘{counts['ERROR']}</span>",
+                            ]
+                            status_html.value = f"<div style='font-family:monospace;padding:5px 0;'>{' '.join(status_parts)}</div>"
+                            last_update = now
+
+                        # Yield to event loop to allow widget updates to flush
+                        await asyncio.sleep(0.01)
+
+            # Run the async function
+            # In Jupyter, the event loop is already running, so we need nest_asyncio
+            def run_with_fallback():
+                from concurrent.futures import ThreadPoolExecutor as TPool, wait as sync_wait, FIRST_COMPLETED as FC
+
+                last_series = to_process[0] if to_process else None
+                with TPool(max_workers=max_workers) as executor:
+                    futures = {executor.submit(process_one, s): s for s in to_process}
+                    pending = set(futures.keys())
+                    while pending:
+                        done, pending = sync_wait(pending, timeout=1.0, return_when=FC)
+                        for f in done:
+                            series = futures[f]
+                            try:
+                                f.result()
+                            except Exception as e:
+                                series.error = str(e)
+                            processed_count[0] += 1
+                            last_series = series
+
+                            # Track timing for ETA
+                            series_time = time.time() - start_time
+                            recent_times.append(series_time / processed_count[0] if processed_count[0] > 0 else 0)
+
+                            # Update thumbnail preview for first few series
+                            if thumbs_shown[0] < max_thumbs_to_show:
+                                if series._thumbnail_path and self._thumb_cache:
+                                    recent_thumb_cache[series.uid] = self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
+                                elif series.thumbnail:
+                                    recent_thumb_cache[series.uid] = series.thumbnail
+                                recent_series.append(series)
+                                if len(recent_series) > max_recent:
+                                    old = recent_series.pop(0)
+                                    recent_thumb_cache.pop(old.uid, None)
+                                thumbs_shown[0] += 1
+                                recent_thumbs_html.value = render_recent_thumbs()
+
+                        # Update display periodically
                         i = processed_count[0]
-
-                        series_time = time.time() - start_time
-                        recent_times.append(series_time / i if i > 0 else 0)
-
-                        # Update displays
-                        update_status(i, series)
+                        if last_series:
+                            update_status(i, last_series)
                         status_map_html.value = render_status_map()
-
-                        # Only show thumbnails for first few series (verify it's working)
-                        if thumbs_shown[0] < max_thumbs_to_show:
-                            if series._thumbnail_path and self._thumb_cache:
-                                recent_thumb_cache[series.uid] = self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
-                            elif series.thumbnail:
-                                recent_thumb_cache[series.uid] = series.thumbnail
-                            recent_series.append(series)
-                            if len(recent_series) > max_recent:
-                                old = recent_series.pop(0)
-                                recent_thumb_cache.pop(old.uid, None)
-                            thumbs_shown[0] += 1
-                            recent_thumbs_html.value = render_recent_thumbs()
-
-                        # Periodic save
                         if save_interval > 0 and i % save_interval == 0 and self._save_path:
                             self.save()
+
+            try:
+                # Try to get or create event loop
+                try:
+                    loop = asyncio.get_running_loop()
+                    # Loop is running (Jupyter) - need nest_asyncio
+                    import nest_asyncio
+                    nest_asyncio.apply()
+                    loop.run_until_complete(run_parallel())
+                except RuntimeError:
+                    # No running loop - create one and run
+                    asyncio.run(run_parallel())
+            except ImportError:
+                # nest_asyncio not available - fall back to synchronous processing
+                print("Note: For better progress display, install nest_asyncio: pip install nest_asyncio")
+                run_with_fallback()
+            except Exception:
+                # Any other error - fall back to synchronous approach
+                import traceback
+                traceback.print_exc()
+                run_with_fallback()
         else:
             # Sequential processing (original behavior)
             for i, series in enumerate(to_process):

@@ -64,6 +64,46 @@ class ThumbnailCache:
         thumb_hash = hashlib.sha256(series_uid.encode()).hexdigest()[:16]
         return f"{thumb_hash[:2]}/{thumb_hash}.jpg"
 
+    def get_path_for_xnat(self, subject: str, session: str, scan_id: str) -> Path:
+        """Get human-readable thumbnail path for XNAT scan.
+
+        Args:
+            subject: XNAT subject label
+            session: XNAT session label
+            scan_id: XNAT scan ID
+
+        Returns:
+            Path like cache_dir/subject/session/scan_id.jpg
+        """
+        # Sanitize names for filesystem safety
+        def sanitize(name: str) -> str:
+            # Replace problematic characters with underscore
+            return "".join(c if c.isalnum() or c in '-_' else '_' for c in str(name))
+
+        safe_subject = sanitize(subject)
+        safe_session = sanitize(session)
+        safe_scan = sanitize(scan_id)
+        return self.cache_dir / safe_subject / safe_session / f"{safe_scan}.jpg"
+
+    def get_relative_path_xnat(self, subject: str, session: str, scan_id: str) -> str:
+        """Get human-readable relative path for XNAT scan.
+
+        Args:
+            subject: XNAT subject label
+            session: XNAT session label
+            scan_id: XNAT scan ID
+
+        Returns:
+            Relative path string (e.g., "SUBJ001/SESSION01/5.jpg")
+        """
+        def sanitize(name: str) -> str:
+            return "".join(c if c.isalnum() or c in '-_' else '_' for c in str(name))
+
+        safe_subject = sanitize(subject)
+        safe_session = sanitize(session)
+        safe_scan = sanitize(scan_id)
+        return f"{safe_subject}/{safe_session}/{safe_scan}.jpg"
+
     def exists(self, series_uid: str) -> bool:
         """Check if thumbnail exists for a series.
 

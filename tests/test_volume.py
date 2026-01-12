@@ -442,3 +442,202 @@ class TestDicomVolumeEdgeCases:
         )
         volume = DicomVolume(sitk_image=image)
         assert volume.slice_thickness == pytest.approx(50.0)
+
+
+class TestFilter4D:
+    """Tests for 4D data filtering."""
+
+    def test_filter_4d_with_unordered_temporal_positions(self):
+        """Test that 4D filtering works with files in arbitrary order.
+
+        This tests the fix for the bug where files were assumed to be
+        in sequential or interleaved order, but XNAT files may come
+        in any order.
+        """
+        from dicom_qc.core.dicom_loader import _filter_4d_generic
+
+        # Mock metadata objects with temporal info
+        class MockMetadata:
+            def __init__(self, temporal_id, slice_pos, num_temporal=4):
+                self.NumberOfTemporalPositions = num_temporal
+                self.TemporalPositionIdentifier = temporal_id
+                self.ImagePositionPatient = [0, 0, slice_pos]
+
+        # Create 12 "files" (3 slices x 4 timepoints) in RANDOM order
+        # This simulates how XNAT might return files
+        file_data = [
+            # (file_id, temporal_position, slice_z)
+            ('f1', 2, 10),   # timepoint 2, slice 0
+            ('f2', 1, 20),   # timepoint 1, slice 1
+            ('f3', 4, 10),   # timepoint 4, slice 0
+            ('f4', 1, 10),   # timepoint 1, slice 0  <- should be in result
+            ('f5', 3, 30),   # timepoint 3, slice 2
+            ('f6', 2, 20),   # timepoint 2, slice 1
+            ('f7', 1, 30),   # timepoint 1, slice 2  <- should be in result
+            ('f8', 4, 20),   # timepoint 4, slice 1
+            ('f9', 3, 10),   # timepoint 3, slice 0
+            ('f10', 2, 30),  # timepoint 2, slice 2
+            ('f11', 4, 30),  # timepoint 4, slice 2
+            ('f12', 3, 20),  # timepoint 3, slice 1
+        ]
+
+        files = [f[0] for f in file_data]
+        metadata_map = {f[0]: MockMetadata(f[1], f[2]) for f in file_data}
+
+        def read_metadata(file_id):
+            return metadata_map.get(file_id)
+
+        filtered, num_timepoints = _filter_4d_generic(files, read_metadata)
+
+        # Should detect 4 timepoints
+        assert num_timepoints == 4
+
+        # Should return only files from timepoint 1
+        assert len(filtered) == 3
+
+        # All returned files should be from timepoint 1
+        expected_files = {'f4', 'f2', 'f7'}  # timepoint 1 files
+        assert set(filtered) == expected_files
+
+    def test_filter_4d_with_sequential_files(self):
+        """Test 4D filtering with sequentially ordered files."""
+        from dicom_qc.core.dicom_loader import _filter_4d_generic
+
+        class MockMetadata:
+            def __init__(self, temporal_id, slice_pos, num_temporal=3):
+                self.NumberOfTemporalPositions = num_temporal
+                self.TemporalPositionIdentifier = temporal_id
+                self.ImagePositionPatient = [0, 0, slice_pos]
+
+        # Sequential order: all timepoint 1, then all timepoint 2, etc.
+        # Need at least 10 files for 4D detection to run
+        file_data = [
+            # Timepoint 1 (4 slices)
+            ('f1', 1, 0), ('f2', 1, 10), ('f3', 1, 20), ('f4', 1, 30),
+            # Timepoint 2
+            ('f5', 2, 0), ('f6', 2, 10), ('f7', 2, 20), ('f8', 2, 30),
+            # Timepoint 3
+            ('f9', 3, 0), ('f10', 3, 10), ('f11', 3, 20), ('f12', 3, 30),
+        ]
+
+        files = [f[0] for f in file_data]
+        metadata_map = {f[0]: MockMetadata(f[1], f[2]) for f in file_data}
+
+        def read_metadata(file_id):
+            return metadata_map.get(file_id)
+
+        filtered, num_timepoints = _filter_4d_generic(files, read_metadata)
+
+        assert num_timepoints == 3
+        assert len(filtered) == 4
+        assert set(filtered) == {'f1', 'f2', 'f3', 'f4'}
+
+    def test_filter_4d_with_interleaved_files(self):
+        """Test 4D filtering with interleaved files."""
+        from dicom_qc.core.dicom_loader import _filter_4d_generic
+
+        class MockMetadata:
+            def __init__(self, temporal_id, slice_pos, num_temporal=2):
+                self.NumberOfTemporalPositions = num_temporal
+                self.TemporalPositionIdentifier = temporal_id
+                self.ImagePositionPatient = [0, 0, slice_pos]
+
+        # Interleaved: t1s0, t2s0, t1s1, t2s1, ...
+        # Need at least 10 files for 4D detection to run
+        file_data = [
+            ('f1', 1, 0), ('f2', 2, 0),
+            ('f3', 1, 10), ('f4', 2, 10),
+            ('f5', 1, 20), ('f6', 2, 20),
+            ('f7', 1, 30), ('f8', 2, 30),
+            ('f9', 1, 40), ('f10', 2, 40),
+            ('f11', 1, 50), ('f12', 2, 50),
+        ]
+
+        files = [f[0] for f in file_data]
+        metadata_map = {f[0]: MockMetadata(f[1], f[2]) for f in file_data}
+
+        def read_metadata(file_id):
+            return metadata_map.get(file_id)
+
+        filtered, num_timepoints = _filter_4d_generic(files, read_metadata)
+
+        assert num_timepoints == 2
+        assert len(filtered) == 6
+        assert set(filtered) == {'f1', 'f3', 'f5', 'f7', 'f9', 'f11'}
+
+    def test_filter_4d_no_temporal_info(self):
+        """Test that non-4D data passes through unchanged."""
+        from dicom_qc.core.dicom_loader import _filter_4d_generic
+
+        class MockMetadata:
+            def __init__(self, slice_pos):
+                self.ImagePositionPatient = [0, 0, slice_pos]
+                # No NumberOfTemporalPositions or TemporalPositionIdentifier
+
+        # Regular 3D volume - all unique slice positions
+        file_data = [('f1', 0), ('f2', 10), ('f3', 20), ('f4', 30)]
+        files = [f[0] for f in file_data]
+        metadata_map = {f[0]: MockMetadata(f[1]) for f in file_data}
+
+        def read_metadata(file_id):
+            return metadata_map.get(file_id)
+
+        filtered, num_timepoints = _filter_4d_generic(files, read_metadata)
+
+        # Should return original files unchanged
+        assert num_timepoints is None
+        assert filtered == files
+
+    def test_filter_4d_too_few_files(self):
+        """Test that small file counts skip 4D detection."""
+        from dicom_qc.core.dicom_loader import _filter_4d_generic
+
+        files = ['f1', 'f2', 'f3']  # Only 3 files
+
+        def read_metadata(f):
+            return None
+
+        filtered, num_timepoints = _filter_4d_generic(files, read_metadata)
+
+        # Should return original files - too few to be 4D
+        assert num_timepoints is None
+        assert filtered == files
+
+    def test_filter_4d_by_duplicate_positions(self):
+        """Test 4D detection by duplicate slice positions (Method 2).
+
+        When NumberOfTemporalPositions is not available, detect 4D by
+        finding duplicate ImagePositionPatient values.
+        """
+        from dicom_qc.core.dicom_loader import _filter_4d_generic
+
+        class MockMetadata:
+            def __init__(self, slice_pos):
+                # No temporal tags - rely on position-based detection
+                self.ImagePositionPatient = [0, 0, slice_pos]
+
+        # 4 slices repeated 3 times (simulating 3 timepoints)
+        # Files in random order
+        file_data = [
+            ('f1', 20), ('f2', 0), ('f3', 10), ('f4', 30),   # "timepoint 1"
+            ('f5', 10), ('f6', 30), ('f7', 0), ('f8', 20),   # "timepoint 2"
+            ('f9', 30), ('f10', 20), ('f11', 0), ('f12', 10), # "timepoint 3"
+        ]
+
+        files = [f[0] for f in file_data]
+        metadata_map = {f[0]: MockMetadata(f[1]) for f in file_data}
+
+        def read_metadata(file_id):
+            return metadata_map.get(file_id)
+
+        filtered, num_timepoints = _filter_4d_generic(files, read_metadata)
+
+        # Should detect ~3 timepoints
+        assert num_timepoints == 3
+
+        # Should return 4 files (one per unique position)
+        assert len(filtered) == 4
+
+        # Files should be sorted by z-position
+        positions = [metadata_map[f].ImagePositionPatient[2] for f in filtered]
+        assert positions == sorted(positions)
