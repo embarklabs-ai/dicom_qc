@@ -572,15 +572,17 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         # Count series with stored file info
         all_series = self.get_all_series()
-        with_paths = sum(1 for s in all_series if s._file_paths and any(s._file_paths))
-        with_uris = sum(1 for s in all_series if s._file_uris)
         total = len(all_series)
 
-        if with_paths > 0:
-            print(f"XNAT session connected ({with_paths}/{total} series have local paths, {with_uris} have URIs)")
+        if total == 0:
+            print("XNAT session connected (no stored data)")
         else:
-            print(f"XNAT session connected ({with_uris}/{total} series have stored URIs)")
-        return self
+            with_paths = sum(1 for s in all_series if s._file_paths and any(s._file_paths))
+            with_uris = sum(1 for s in all_series if s._file_uris)
+            if with_paths > 0:
+                print(f"XNAT session connected ({with_paths}/{total} series have local paths, {with_uris} have URIs)")
+            else:
+                print(f"XNAT session connected ({with_uris}/{total} series have stored URIs)")
 
     def discover(self, refresh: bool = False) -> Dict[str, PatientInfo]:
         """Scan DICOM files and build patient/study/series hierarchy.
