@@ -45,11 +45,22 @@ def _xnat_retry(func: Callable, max_retries: int = 3, base_delay: float = 2.0):
 
     raise last_error
 
+
 from dicom_qc.core.dicom_loader import DicomLoader
 from dicom_qc.core.geometry import GeometryQC
 from dicom_qc.visualization.snapshots import SnapshotGenerator
 from dicom_qc.quickcheck_html import QuickCheckHTMLMixin
 from dicom_qc.quickcheck_display import QuickCheckDisplayMixin
+
+
+def _fetch_scan_files(scan) -> List:
+    """Fetch all DICOM files from an XNAT scan, excluding SNAPSHOTS resource."""
+    all_files = []
+    for res in scan.resources.values():
+        res_label = getattr(res, 'label', '').upper()
+        if res_label != 'SNAPSHOTS':
+            all_files.extend(res.files.values())
+    return all_files
 
 
 class XnatFileHandle:
@@ -678,7 +689,175 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         return self.patients
 
-    def discover_xnat(self, project: Any, interactive: bool = True, refresh: bool = True, read_dicom: bool = False, parallel: bool = None, max_workers: int = 8) -> Dict[str, PatientInfo]:
+    def _ensure_xnat_patient(self, subject_label: str, xnat_subject_id: str = None) -> 'PatientInfo':
+        """Ensure a patient exists in the hierarchy, creating if needed.
+
+        Args:
+            subject_label: XNAT subject label (used as patient_id)
+            xnat_subject_id: Internal XNAT subject ID
+
+        Returns:
+            PatientInfo for the subject
+        """
+        if subject_label not in self.patients:
+            self.patients[subject_label] = PatientInfo(subject_label, '', xnat_subject_id=xnat_subject_id)
+        elif xnat_subject_id and self.patients[subject_label].xnat_subject_id is None:
+            self.patients[subject_label].xnat_subject_id = xnat_subject_id
+        return self.patients[subject_label]
+
+    def _ensure_xnat_study(self, patient: 'PatientInfo', session_label: str,
+                           xnat_experiment_id: str = None) -> 'StudyInfo':
+        """Ensure a study exists in the patient hierarchy, creating if needed.
+
+        Args:
+            patient: PatientInfo to add study to
+            session_label: XNAT session label (used as study key)
+            xnat_experiment_id: Internal XNAT experiment ID
+
+        Returns:
+            StudyInfo for the session
+        """
+        if session_label not in patient.studies:
+            patient.studies[session_label] = StudyInfo(
+                uid='',
+                date='',
+                description=session_label,
+                xnat_session_label=session_label,
+                xnat_experiment_id=xnat_experiment_id,
+            )
+        elif xnat_experiment_id and patient.studies[session_label].xnat_experiment_id is None:
+            patient.studies[session_label].xnat_experiment_id = xnat_experiment_id
+        return patient.studies[session_label]
+
+    def _create_series_from_xnat_scan(self, scan: Any, subject_label: str,
+                                       session_label: str) -> 'SeriesInfo':
+        """Create a SeriesInfo from an XNAT scan, fetching metadata and file URIs.
+
+        Args:
+            scan: XNAT scan object
+            subject_label: Parent subject label
+            session_label: Parent session label
+
+        Returns:
+            SeriesInfo populated with XNAT metadata and file URIs
+        """
+        scan_id = scan.id
+
+        # Get metadata from XNAT (with retry for transient errors)
+        try:
+            series_desc = _xnat_retry(lambda: getattr(scan, 'series_description', '') or '')
+            modality = _xnat_retry(lambda: getattr(scan, 'modality', '??') or '??')
+        except Exception:
+            series_desc = ''
+            modality = '??'
+
+        series = SeriesInfo(
+            uid='',
+            series_number=scan_id,
+            description=series_desc,
+            modality=modality,
+            xnat_scan_id=scan_id,
+            _xnat_subject_label=subject_label,
+            _xnat_session_label=session_label,
+        )
+        series._xnat_files = True
+
+        # Fetch and store file URIs and local paths
+        try:
+            all_files = _xnat_retry(lambda: _fetch_scan_files(scan))
+            series._file_uris = [f.uri for f in all_files]
+            series._file_paths = [getattr(f, 'data_path', None) or '' for f in all_files]
+        except Exception:
+            series._scan_obj = scan
+
+        return series
+
+    def _refetch_missing_file_uris(self, series: 'SeriesInfo', scan: Any) -> None:
+        """Re-fetch file URIs for an existing series that's missing them.
+
+        Args:
+            series: Existing SeriesInfo missing file URIs
+            scan: XNAT scan object to fetch from
+        """
+        try:
+            all_files = _xnat_retry(lambda: _fetch_scan_files(scan))
+            if all_files:
+                series._file_uris = [f.uri for f in all_files]
+                series._file_paths = [getattr(f, 'data_path', None) or '' for f in all_files]
+            else:
+                series.error = "No DICOM files in XNAT resources"
+        except Exception as e:
+            series.error = f"Failed to fetch files: {e}"
+
+    def _collect_xnat_scan_tasks(self, subjects: List[Any], refresh: bool,
+                                  progress_callback=None) -> tuple:
+        """Collect scan tasks from XNAT hierarchy.
+
+        Phase 1 of discovery: iterate through subjects/experiments/scans to build
+        task list for processing. This is done sequentially as it's fast.
+
+        Args:
+            subjects: List of XNAT subject objects
+            refresh: If True, include all scans. If False, skip scans with URIs.
+            progress_callback: Optional callback(subject_label, session_label, scan_id)
+
+        Returns:
+            Tuple of (scan_tasks, total_sessions, total_scans, skipped_scans)
+            where scan_tasks is list of (subject_label, session_label, scan, study)
+        """
+        scan_tasks = []
+        total_sessions = 0
+        total_scans = 0
+        skipped_scans = 0
+
+        for subject in subjects:
+            subject_label = subject.label
+            xnat_subj_id = getattr(subject, 'id', None)
+            patient = self._ensure_xnat_patient(subject_label, xnat_subj_id)
+
+            # Get experiments with retry
+            try:
+                experiments = _xnat_retry(lambda: list(subject.experiments.values()))
+            except Exception:
+                continue
+
+            for experiment in experiments:
+                session_label = experiment.label
+                total_sessions += 1
+                xnat_exp_id = getattr(experiment, 'id', None)
+                study = self._ensure_xnat_study(patient, session_label, xnat_exp_id)
+
+                # Get scans with retry
+                try:
+                    scans = _xnat_retry(lambda: list(experiment.scans.values()))
+                except Exception:
+                    continue
+
+                for scan in scans:
+                    scan_id = scan.id
+                    total_scans += 1
+
+                    if progress_callback:
+                        progress_callback(subject_label, session_label, scan_id)
+
+                    # Skip existing scans in incremental mode
+                    if not refresh and scan_id in study.series:
+                        existing = study.series[scan_id]
+                        if existing._file_uris:
+                            skipped_scans += 1
+                            continue
+                        # Re-fetch missing file URIs
+                        self._refetch_missing_file_uris(existing, scan)
+                        skipped_scans += 1
+                        continue
+
+                    scan_tasks.append((subject_label, session_label, scan, study))
+
+        return scan_tasks, total_sessions, total_scans, skipped_scans
+
+    def discover_xnat(self, project: Any, interactive: bool = True, refresh: bool = True,
+                      read_dicom: bool = False, parallel: bool = None,
+                      max_workers: int = 8) -> Dict[str, PatientInfo]:
         """Discover DICOM series from an XNAT project.
 
         Uses XNAT hierarchy (subject/session/scan) instead of DICOM headers.
@@ -704,7 +883,6 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         # Store project info for OHIF links
         try:
             self._xnat_project_id = project.id
-            # Extract base URL from session
             if hasattr(project, '_session') and hasattr(project._session, '_original_uri'):
                 self._xnat_base_url = project._session._original_uri.rstrip('/')
             elif hasattr(project, '_session') and hasattr(project._session, 'host'):
@@ -712,29 +890,25 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         except Exception:
             pass
 
-        # Store session reference for file access (via stored URIs after save/load)
+        # Store session reference for file access
         try:
             self._xnat_session = project._session
         except Exception:
-            pass  # Session not available, URI restore won't work
+            pass
 
-        # Get subjects list first for progress tracking
         subjects = list(project.subjects.values())
         total_subjects = len(subjects)
 
-        # Set up progress display if interactive
+        # Set up progress display
         progress_widget = None
         status_widget = None
-        new_scans = 0
-        skipped_scans = 0
-
         mode_str = "Discovering" if refresh else "Updating"
+
         if interactive:
             try:
                 import ipywidgets as widgets
                 from IPython.display import display
 
-                # Use FloatProgress for smoother updates (estimate progress within subjects)
                 progress_widget = widgets.FloatProgress(
                     value=0, min=0, max=100,
                     description=f'{mode_str}:',
@@ -742,541 +916,236 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                     style={'bar_color': '#17a2b8', 'description_width': '80px'},
                     layout=widgets.Layout(width='100%')
                 )
-                status_widget = widgets.HTML(f'<div style="font-family:monospace;">0/{total_subjects} subjects | 0 sessions | 0 scans</div>')
+                status_widget = widgets.HTML(
+                    f'<div style="font-family:monospace;">0/{total_subjects} subjects</div>'
+                )
                 display(widgets.VBox([progress_widget, status_widget]))
             except Exception:
                 interactive = False
 
-        total_sessions = 0
-        total_scans = 0
-        scans_per_subject = []  # Track for estimating progress
-
-        # Auto-enable parallelism for projects with many subjects
+        # Auto-enable parallelism for larger projects
         if parallel is None:
             parallel = total_subjects > 2
 
-        # For parallel mode, take a snapshot of existing patients to avoid race conditions
-        existing_patients_snapshot = dict(self.patients) if not refresh else {}
-
-        # Helper function to discover a single subject
-        def discover_subject(subject):
-            """Discover all sessions and scans for a single subject."""
-            subject_label = subject.label
-            subject_sessions = 0
-            subject_scans = 0
-            subject_new_scans = 0
-            subject_skipped = 0
-
-            # Get or create patient (use snapshot for thread safety)
-            if subject_label in existing_patients_snapshot:
-                # Copy existing patient to avoid modifying shared state
-                existing = existing_patients_snapshot[subject_label]
-                patient = PatientInfo(
-                    subject_label,
-                    existing.patient_name,
-                    xnat_subject_id=existing.xnat_subject_id or getattr(subject, 'id', None)
-                )
-                # Copy existing studies
-                for study_key, study in existing.studies.items():
-                    patient.studies[study_key] = StudyInfo(
-                        uid=study.uid,
-                        date=study.date,
-                        description=study.description,
-                        xnat_session_label=study.xnat_session_label,
-                        xnat_experiment_id=study.xnat_experiment_id,
-                    )
-                    # Copy existing series
-                    for series_key, series in study.series.items():
-                        patient.studies[study_key].series[series_key] = series
-            else:
-                xnat_subj_id = getattr(subject, 'id', None)
-                patient = PatientInfo(subject_label, '', xnat_subject_id=xnat_subj_id)
-
-            # Get experiments with retry
-            try:
-                experiments = _xnat_retry(lambda: list(subject.experiments.values()))
-            except Exception:
-                return subject_label, patient, subject_sessions, subject_scans, subject_new_scans, subject_skipped
-
-            for experiment in experiments:
-                session_label = experiment.label
-                subject_sessions += 1
-
-                if session_label not in patient.studies:
-                    xnat_exp_id = getattr(experiment, 'id', None)
-                    patient.studies[session_label] = StudyInfo(
-                        uid='',
-                        date='',
-                        description=session_label,
-                        xnat_session_label=session_label,
-                        xnat_experiment_id=xnat_exp_id,
-                    )
-                elif patient.studies[session_label].xnat_experiment_id is None:
-                    patient.studies[session_label].xnat_experiment_id = getattr(experiment, 'id', None)
-
-                study = patient.studies[session_label]
-
-                # Get scans with retry
-                try:
-                    scans = _xnat_retry(lambda: list(experiment.scans.values()))
-                except Exception:
-                    continue
-
-                for scan in scans:
-                    scan_id = scan.id
-                    subject_scans += 1
-
-                    # Skip existing scans in incremental mode
-                    if not refresh and scan_id in study.series:
-                        existing = study.series[scan_id]
-                        if existing._file_uris:
-                            subject_skipped += 1
-                            continue
-                        # Re-fetch missing file URIs
-                        try:
-                            def fetch_existing_files():
-                                all_files = []
-                                for res in scan.resources.values():
-                                    res_label = getattr(res, 'label', '').upper()
-                                    if res_label != 'SNAPSHOTS':
-                                        all_files.extend(res.files.values())
-                                return all_files
-                            all_files = _xnat_retry(fetch_existing_files)
-                            if all_files:
-                                existing._file_uris = [f.uri for f in all_files]
-                                existing._file_paths = [getattr(f, 'data_path', None) or '' for f in all_files]
-                            else:
-                                existing.error = "No DICOM files in XNAT resources"
-                        except Exception as e:
-                            existing.error = f"Failed to fetch files: {e}"
-                        subject_skipped += 1
-                        continue
-
-                    subject_new_scans += 1
-
-                    # Get metadata from XNAT
-                    try:
-                        series_desc = _xnat_retry(lambda: getattr(scan, 'series_description', '') or '')
-                        modality = _xnat_retry(lambda: getattr(scan, 'modality', '??') or '??')
-                    except Exception:
-                        series_desc = ''
-                        modality = '??'
-
-                    series = SeriesInfo(
-                        uid='',
-                        series_number=scan_id,
-                        description=series_desc,
-                        modality=modality,
-                        xnat_scan_id=scan_id,
-                        _xnat_subject_label=subject_label,
-                        _xnat_session_label=session_label,
-                    )
-                    series._xnat_files = True
-
-                    # Fetch file URIs and paths
-                    try:
-                        def fetch_files():
-                            all_files = []
-                            for res in scan.resources.values():
-                                res_label = getattr(res, 'label', '').upper()
-                                if res_label != 'SNAPSHOTS':
-                                    all_files.extend(res.files.values())
-                            return all_files
-                        all_files = _xnat_retry(fetch_files)
-                        series._file_uris = [f.uri for f in all_files]
-                        series._file_paths = [getattr(f, 'data_path', None) or '' for f in all_files]
-                    except Exception:
-                        series._scan_obj = scan
-
-                    study.series[scan_id] = series
-
-            return subject_label, patient, subject_sessions, subject_scans, subject_new_scans, subject_skipped
-
-        if parallel and max_workers > 1:
-            # Parallel discovery with per-scan updates (mirrors process_all pattern)
-            from concurrent.futures import ThreadPoolExecutor
-            import threading
-            import asyncio
-
-            lock = threading.Lock()
-
-            # Phase 1: Collect all scan tasks sequentially (fast - just XNAT hierarchy)
-            scan_tasks = []  # List of (subject_label, session_label, scan, study_ref) tuples
-
-            if progress_widget:
-                status_widget.value = f'<div style="font-family:monospace;">Collecting scan list from {total_subjects} subjects...</div>'
-
-            for subject in subjects:
-                subject_label = subject.label
-
-                # Ensure patient exists
-                if subject_label not in self.patients:
-                    xnat_subj_id = getattr(subject, 'id', None)
-                    self.patients[subject_label] = PatientInfo(subject_label, '', xnat_subject_id=xnat_subj_id)
-                elif self.patients[subject_label].xnat_subject_id is None:
-                    self.patients[subject_label].xnat_subject_id = getattr(subject, 'id', None)
-
-                # Get experiments
-                try:
-                    experiments = _xnat_retry(lambda: list(subject.experiments.values()))
-                except Exception:
-                    continue
-
-                for experiment in experiments:
-                    session_label = experiment.label
-                    total_sessions += 1
-
-                    # Ensure study exists
-                    if session_label not in self.patients[subject_label].studies:
-                        xnat_exp_id = getattr(experiment, 'id', None)
-                        self.patients[subject_label].studies[session_label] = StudyInfo(
-                            uid='',
-                            date='',
-                            description=session_label,
-                            xnat_session_label=session_label,
-                            xnat_experiment_id=xnat_exp_id,
-                        )
-                    elif self.patients[subject_label].studies[session_label].xnat_experiment_id is None:
-                        self.patients[subject_label].studies[session_label].xnat_experiment_id = getattr(experiment, 'id', None)
-
-                    study = self.patients[subject_label].studies[session_label]
-
-                    # Get scans
-                    try:
-                        scans = _xnat_retry(lambda: list(experiment.scans.values()))
-                    except Exception:
-                        continue
-
-                    for scan in scans:
-                        scan_id = scan.id
-                        total_scans += 1
-
-                        # Skip existing scans in incremental mode
-                        if not refresh and scan_id in study.series:
-                            existing = study.series[scan_id]
-                            if existing._file_uris:
-                                skipped_scans += 1
-                                continue
-
-                        # Add to task list for parallel processing
-                        scan_tasks.append((subject_label, session_label, scan, study))
-
-            # Phase 2: Process each scan in parallel with per-scan UI updates
-            total_scan_tasks = len(scan_tasks)
-            processed_count = [0]
-
-            if progress_widget:
-                progress_widget.value = 0
-                status_widget.value = f'<div style="font-family:monospace;">0/{total_scan_tasks} scans | {total_sessions} sessions | {total_subjects} subjects</div>'
-
-            def process_scan(task):
-                """Process a single scan (thread-safe)."""
-                subject_label, session_label, scan, study = task
-                scan_id = scan.id
-
-                # Get metadata from XNAT
-                try:
-                    series_desc = _xnat_retry(lambda: getattr(scan, 'series_description', '') or '')
-                    modality = _xnat_retry(lambda: getattr(scan, 'modality', '??') or '??')
-                except Exception:
-                    series_desc = ''
-                    modality = '??'
-
-                series = SeriesInfo(
-                    uid='',
-                    series_number=scan_id,
-                    description=series_desc,
-                    modality=modality,
-                    xnat_scan_id=scan_id,
-                    _xnat_subject_label=subject_label,
-                    _xnat_session_label=session_label,
-                )
-                series._xnat_files = True
-
-                # Fetch file URIs and paths (the slow part)
-                try:
-                    def fetch_files():
-                        all_files = []
-                        for res in scan.resources.values():
-                            res_label = getattr(res, 'label', '').upper()
-                            if res_label != 'SNAPSHOTS':
-                                all_files.extend(res.files.values())
-                        return all_files
-                    all_files = _xnat_retry(fetch_files)
-                    series._file_uris = [f.uri for f in all_files]
-                    series._file_paths = [getattr(f, 'data_path', None) or '' for f in all_files]
-                except Exception:
-                    series._scan_obj = scan
-
-                return subject_label, session_label, scan_id, series
-
-            # Use asyncio pattern like process_all for responsive updates
-            async def run_parallel():
-                nonlocal new_scans
-                loop = asyncio.get_running_loop()
-
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    pending_futures = {
-                        loop.run_in_executor(executor, process_scan, task): task
-                        for task in scan_tasks
-                    }
-
-                    while pending_futures:
-                        done, pending = await asyncio.wait(
-                            pending_futures.keys(),
-                            timeout=0.3,
-                            return_when=asyncio.FIRST_COMPLETED
-                        )
-
-                        for future in done:
-                            task = pending_futures.pop(future)
-                            subject_label, session_label, _, _ = task
-                            try:
-                                subj_label, sess_label, scan_id, series = await future
-
-                                with lock:
-                                    # Add series to study
-                                    self.patients[subj_label].studies[sess_label].series[scan_id] = series
-                                    new_scans += 1
-                                    processed_count[0] += 1
-
-                                    # Update progress
-                                    if progress_widget:
-                                        progress_pct = (processed_count[0] / total_scan_tasks) * 100
-                                        progress_widget.value = progress_pct
-                                        status_widget.value = (
-                                            f'<div style="font-family:monospace;">'
-                                            f'{processed_count[0]}/{total_scan_tasks} scans | {total_sessions} sessions | {total_subjects} subjects<br>'
-                                            f'<span style="color:#888">{subj_label} / {sess_label} / scan {scan_id}</span></div>'
-                                        )
-
-                            except Exception:
-                                with lock:
-                                    processed_count[0] += 1
-
-                        # Yield to event loop for widget updates
-                        await asyncio.sleep(0.01)
-
-            # Fallback for when asyncio doesn't work
-            def run_with_fallback():
-                nonlocal new_scans
-                from concurrent.futures import as_completed
-
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = {executor.submit(process_scan, task): task for task in scan_tasks}
-
-                    for future in as_completed(futures):
-                        task = futures[future]
-                        subject_label, session_label, _, _ = task
-                        try:
-                            subj_label, sess_label, scan_id, series = future.result()
-
-                            with lock:
-                                self.patients[subj_label].studies[sess_label].series[scan_id] = series
-                                new_scans += 1
-                                processed_count[0] += 1
-
-                                if progress_widget:
-                                    progress_pct = (processed_count[0] / total_scan_tasks) * 100
-                                    progress_widget.value = progress_pct
-                                    status_widget.value = (
-                                        f'<div style="font-family:monospace;">'
-                                        f'{processed_count[0]}/{total_scan_tasks} scans | {total_sessions} sessions | {total_subjects} subjects<br>'
-                                        f'<span style="color:#888">{subj_label} / {sess_label} / scan {scan_id}</span></div>'
-                                    )
-
-                        except Exception:
-                            with lock:
-                                processed_count[0] += 1
-
-            # Run with asyncio if possible, fallback otherwise
-            try:
-                try:
-                    loop = asyncio.get_running_loop()
-                    import nest_asyncio
-                    nest_asyncio.apply()
-                    loop.run_until_complete(run_parallel())
-                except RuntimeError:
-                    asyncio.run(run_parallel())
-            except ImportError:
-                run_with_fallback()
-            except Exception:
-                import traceback
-                traceback.print_exc()
-                run_with_fallback()
-
-            # Save once at end
-            if self._save_path and new_scans > 0:
-                self.save()
-
-        else:
-            # Sequential discovery (original behavior)
-            for subj_idx, subject in enumerate(subjects):
-                subject_label = subject.label
-                subject_scan_count = 0
-                subject_new_scans = 0
-
-                if subject_label not in self.patients:
-                    # Get internal XNAT subject ID
-                    xnat_subj_id = getattr(subject, 'id', None)
-                    self.patients[subject_label] = PatientInfo(subject_label, '', xnat_subject_id=xnat_subj_id)
-                elif self.patients[subject_label].xnat_subject_id is None:
-                    # Update missing XNAT subject ID (e.g., from old save file)
-                    self.patients[subject_label].xnat_subject_id = getattr(subject, 'id', None)
-
-                # Get experiments with retry for transient errors
-                try:
-                    experiments = _xnat_retry(lambda: list(subject.experiments.values()))
-                except Exception as e:
-                    # Skip subject if we can't access its experiments
-                    continue
-
-                for experiment in experiments:
-                    session_label = experiment.label
-                    total_sessions += 1
-
-                    if session_label not in self.patients[subject_label].studies:
-                        # Get internal XNAT experiment ID
-                        xnat_exp_id = getattr(experiment, 'id', None)
-                        self.patients[subject_label].studies[session_label] = StudyInfo(
-                            uid='',  # Will be set from DICOM if available
-                            date='',
-                            description=session_label,
-                            xnat_session_label=session_label,
-                            xnat_experiment_id=xnat_exp_id,
-                        )
-                    elif self.patients[subject_label].studies[session_label].xnat_experiment_id is None:
-                        # Update missing XNAT experiment ID (e.g., from old save file)
-                        self.patients[subject_label].studies[session_label].xnat_experiment_id = getattr(experiment, 'id', None)
-
-                    # Get scans with retry for transient errors
-                    try:
-                        scans = _xnat_retry(lambda: list(experiment.scans.values()))
-                    except Exception as e:
-                        # Skip session if we can't access its scans
-                        continue
-
-                    for scan in scans:
-                        scan_id = scan.id
-                        total_scans += 1
-                        subject_scan_count += 1
-
-                        # Update progress per scan - estimate progress within current subject
-                        if progress_widget:
-                            # Estimate: use avg scans/subject to calculate sub-progress
-                            if scans_per_subject:
-                                avg_scans = sum(scans_per_subject) / len(scans_per_subject)
-                                # Progress = completed subjects + fraction of current subject
-                                sub_progress = min(subject_scan_count / max(avg_scans, 1), 1.0)
-                            else:
-                                # First subject: assume we're partway through
-                                sub_progress = min(subject_scan_count / 100, 0.9)  # Cap at 90% until we know more
-
-                            progress_pct = ((subj_idx + sub_progress) / total_subjects) * 100
-                            progress_widget.value = progress_pct
-                            status_widget.value = f'<div style="font-family:monospace;">{subj_idx}/{total_subjects} subjects | {total_sessions} sessions | {total_scans} scans<br><span style="color:#888">{subject_label} / {session_label} / scan {scan_id}</span></div>'
-
-                        # Skip existing scans in incremental mode (unless missing file URIs)
-                        study = self.patients[subject_label].studies[session_label]
-                        if not refresh and scan_id in study.series:
-                            existing = study.series[scan_id]
-                            if existing._file_uris:
-                                skipped_scans += 1
-                                continue
-                            # Series exists but missing file URIs - re-fetch them (with retry)
-                            try:
-                                def fetch_existing_files():
-                                    all_files = []
-                                    for res in scan.resources.values():
-                                        # Exclude SNAPSHOTS resource
-                                        res_label = getattr(res, 'label', '').upper()
-                                        if res_label != 'SNAPSHOTS':
-                                            all_files.extend(res.files.values())
-                                    return all_files
-
-                                all_files = _xnat_retry(fetch_existing_files)
-                                if all_files:
-                                    existing._file_uris = [f.uri for f in all_files]
-                                    existing._file_paths = [getattr(f, 'data_path', None) or '' for f in all_files]
-                                else:
-                                    existing.error = "No DICOM files in XNAT resources"
-                            except Exception as e:
-                                existing.error = f"Failed to fetch files: {e}"
-                            skipped_scans += 1
-                            continue
-
-                        new_scans += 1
-                        subject_new_scans += 1
-
-                        # Get metadata from XNAT (with retry for transient errors)
-                        try:
-                            series_desc = _xnat_retry(lambda: getattr(scan, 'series_description', '') or '')
-                            modality = _xnat_retry(lambda: getattr(scan, 'modality', '??') or '??')
-                        except Exception:
-                            # Fallback if metadata fetch fails entirely
-                            series_desc = ''
-                            modality = '??'
-
-                        series = SeriesInfo(
-                            uid='',  # Will be set during processing
-                            series_number=scan_id,
-                            description=series_desc,
-                            modality=modality,
-                            xnat_scan_id=scan_id,
-                            _xnat_subject_label=subject_label,
-                            _xnat_session_label=session_label,
-                        )
-                        series._xnat_files = True
-
-                        # Fetch and store file URIs and local paths now (enables save/load without re-discovery)
-                        try:
-                            def fetch_files():
-                                all_files = []
-                                for res in scan.resources.values():
-                                    # Exclude SNAPSHOTS resource
-                                    res_label = getattr(res, 'label', '').upper()
-                                    if res_label != 'SNAPSHOTS':
-                                        all_files.extend(res.files.values())
-                                return all_files
-
-                            all_files = _xnat_retry(fetch_files)
-                            series._file_uris = [f.uri for f in all_files]
-                            series._file_paths = [getattr(f, 'data_path', None) or '' for f in all_files]
-                        except Exception:
-                            # Store scan object as fallback if file listing fails
-                            series._scan_obj = scan
-
-                        study.series[scan_id] = series
-
-                # Track scans per subject for progress estimation
-                scans_per_subject.append(subject_scan_count)
-
-                # Save after each subject with new scans (file listing is slow, preserve progress)
-                if self._save_path and subject_new_scans > 0:
-                    self.save()
+        # Phase 1: Collect all scan tasks (fast, sequential)
+        if progress_widget:
+            status_widget.value = (
+                f'<div style="font-family:monospace;">'
+                f'Collecting scan list from {total_subjects} subjects...</div>'
+            )
+
+        scan_tasks, total_sessions, total_scans, skipped_scans = self._collect_xnat_scan_tasks(
+            subjects, refresh
+        )
+        total_scan_tasks = len(scan_tasks)
+        new_scans = 0
+
+        if progress_widget:
+            progress_widget.value = 0
+            status_widget.value = (
+                f'<div style="font-family:monospace;">'
+                f'0/{total_scan_tasks} scans | {total_sessions} sessions | {total_subjects} subjects</div>'
+            )
+
+        # Phase 2: Process scans (parallel or sequential)
+        if parallel and max_workers > 1 and total_scan_tasks > 0:
+            new_scans = self._process_xnat_scans_parallel(
+                scan_tasks, total_scan_tasks, total_sessions, total_subjects,
+                max_workers, progress_widget, status_widget
+            )
+        elif total_scan_tasks > 0:
+            new_scans = self._process_xnat_scans_sequential(
+                scan_tasks, total_scan_tasks, total_sessions, total_subjects,
+                progress_widget, status_widget
+            )
 
         # Final progress update
         if progress_widget:
             progress_widget.value = 100
             progress_widget.bar_style = 'success'
             if refresh:
-                status_widget.value = f'<div style="font-family:monospace;"><b>✓ Discovery complete:</b> {total_subjects} subjects | {total_sessions} sessions | {total_scans} scans</div>'
+                status_widget.value = (
+                    f'<div style="font-family:monospace;">'
+                    f'<b>✓ Discovery complete:</b> {total_subjects} subjects | '
+                    f'{total_sessions} sessions | {total_scans} scans</div>'
+                )
             else:
-                status_widget.value = f'<div style="font-family:monospace;"><b>✓ Update complete:</b> {new_scans} new scans | {skipped_scans} existing (skipped)</div>'
+                status_widget.value = (
+                    f'<div style="font-family:monospace;">'
+                    f'<b>✓ Update complete:</b> {new_scans} new scans | '
+                    f'{skipped_scans} existing (skipped)</div>'
+                )
         else:
-            # Non-interactive: print summary
             print(f"Discovered {total_subjects} subjects, {total_sessions} sessions, {total_scans} scans")
 
-        # Flag any series still missing file URIs (e.g., deleted from XNAT but in saved state)
-        missing_count = 0
+        # Flag series missing file URIs
         for series in self.get_all_series():
             if series._xnat_files and not series._file_uris and not series.error:
                 series.error = "No file paths available (scan may have been removed from XNAT)"
-                missing_count += 1
 
         # Auto-save after discovery
         if self.data_dir:
             self.save()
+
+    def _process_xnat_scans_sequential(self, scan_tasks: List, total_tasks: int,
+                                        total_sessions: int, total_subjects: int,
+                                        progress_widget, status_widget) -> int:
+        """Process XNAT scans sequentially.
+
+        Args:
+            scan_tasks: List of (subject_label, session_label, scan, study) tuples
+            total_tasks: Total number of tasks for progress calculation
+            total_sessions: Total sessions discovered (for display)
+            total_subjects: Total subjects discovered (for display)
+            progress_widget: Jupyter progress widget or None
+            status_widget: Jupyter status HTML widget or None
+
+        Returns:
+            Number of new scans processed
+        """
+        new_scans = 0
+
+        for i, (subject_label, session_label, scan, study) in enumerate(scan_tasks):
+            scan_id = scan.id
+
+            # Update progress
+            if progress_widget:
+                progress_pct = ((i + 1) / total_tasks) * 100
+                progress_widget.value = progress_pct
+                status_widget.value = (
+                    f'<div style="font-family:monospace;">'
+                    f'{i + 1}/{total_tasks} scans | {total_sessions} sessions | {total_subjects} subjects<br>'
+                    f'<span style="color:#888">{subject_label} / {session_label} / scan {scan_id}</span></div>'
+                )
+
+            # Create series and add to study
+            series = self._create_series_from_xnat_scan(scan, subject_label, session_label)
+            study.series[scan_id] = series
+            new_scans += 1
+
+            # Periodic save (every 10 scans)
+            if self._save_path and new_scans % 10 == 0:
+                self.save()
+
+        # Final save
+        if self._save_path and new_scans > 0:
+            self.save()
+
+        return new_scans
+
+    def _process_xnat_scans_parallel(self, scan_tasks: List, total_tasks: int,
+                                      total_sessions: int, total_subjects: int,
+                                      max_workers: int, progress_widget,
+                                      status_widget) -> int:
+        """Process XNAT scans in parallel using ThreadPoolExecutor.
+
+        Args:
+            scan_tasks: List of (subject_label, session_label, scan, study) tuples
+            total_tasks: Total number of tasks for progress calculation
+            total_sessions: Total sessions discovered (for display)
+            total_subjects: Total subjects discovered (for display)
+            max_workers: Number of parallel workers
+            progress_widget: Jupyter progress widget or None
+            status_widget: Jupyter status HTML widget or None
+
+        Returns:
+            Number of new scans processed
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+        import asyncio
+
+        lock = threading.Lock()
+        new_scans = 0
+        processed_count = [0]
+
+        def process_one(task):
+            """Process a single scan task."""
+            subject_label, session_label, scan, study = task
+            series = self._create_series_from_xnat_scan(scan, subject_label, session_label)
+            return subject_label, session_label, scan.id, series, study
+
+        def update_progress(subj_label, sess_label, scan_id):
+            """Update progress widgets."""
+            if progress_widget:
+                progress_pct = (processed_count[0] / total_tasks) * 100
+                progress_widget.value = progress_pct
+                status_widget.value = (
+                    f'<div style="font-family:monospace;">'
+                    f'{processed_count[0]}/{total_tasks} scans | {total_sessions} sessions | '
+                    f'{total_subjects} subjects<br>'
+                    f'<span style="color:#888">{subj_label} / {sess_label} / scan {scan_id}</span></div>'
+                )
+
+        # Try asyncio for responsive updates, fall back to synchronous
+        async def run_parallel():
+            nonlocal new_scans
+            loop = asyncio.get_running_loop()
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                pending_futures = {
+                    loop.run_in_executor(executor, process_one, task): task
+                    for task in scan_tasks
+                }
+
+                while pending_futures:
+                    done, _ = await asyncio.wait(
+                        pending_futures.keys(),
+                        timeout=0.3,
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+
+                    for future in done:
+                        pending_futures.pop(future)
+                        try:
+                            subj_label, sess_label, scan_id, series, study = await future
+                            with lock:
+                                study.series[scan_id] = series
+                                new_scans += 1
+                                processed_count[0] += 1
+                                update_progress(subj_label, sess_label, scan_id)
+                        except Exception:
+                            with lock:
+                                processed_count[0] += 1
+
+                    await asyncio.sleep(0.01)
+
+        def run_fallback():
+            nonlocal new_scans
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(process_one, task): task for task in scan_tasks}
+
+                for future in as_completed(futures):
+                    try:
+                        subj_label, sess_label, scan_id, series, study = future.result()
+                        with lock:
+                            study.series[scan_id] = series
+                            new_scans += 1
+                            processed_count[0] += 1
+                            update_progress(subj_label, sess_label, scan_id)
+                    except Exception:
+                        with lock:
+                            processed_count[0] += 1
+
+        # Run with asyncio if available
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+                import nest_asyncio
+                nest_asyncio.apply()
+                loop.run_until_complete(run_parallel())
+            except RuntimeError:
+                asyncio.run(run_parallel())
+        except ImportError:
+            run_fallback()
+        except Exception:
+            run_fallback()
+
+        # Save at end
+        if self._save_path and new_scans > 0:
+            self.save()
+
+        return new_scans
 
     def _add_file_to_hierarchy(self, ds: pydicom.Dataset, dcm_file: Path) -> None:
         """Add a DICOM file to the hierarchy."""
@@ -1859,6 +1728,82 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         return self.get_summary()
 
+    def _format_time(self, seconds: float) -> str:
+        """Format seconds into human-readable time string."""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        elif seconds < 3600:
+            return f"{seconds // 60:.0f}m {seconds % 60:.0f}s"
+        else:
+            return f"{seconds // 3600:.0f}h {(seconds % 3600) // 60:.0f}m"
+
+    def _format_status_counts(self, counts: Dict[str, int], include_optional: bool = True) -> str:
+        """Format status counts as colored HTML spans.
+
+        Args:
+            counts: Dict of status -> count
+            include_optional: If True, include NOTE and DERIVED if non-zero
+
+        Returns:
+            HTML string with colored status counts
+        """
+        c = self.STATUS_COLORS
+        parts = [
+            f"<span style='color:{c['PASS']}'>✓{counts['PASS']}</span>",
+            f"<span style='color:{c['WARNING']}'>⚠{counts['WARNING']}</span>",
+            f"<span style='color:{c['FAIL']}'>✗{counts['FAIL']}</span>",
+            f"<span style='color:{c['ERROR']}'>⊘{counts['ERROR']}</span>",
+        ]
+        if include_optional:
+            if counts.get('NOTE', 0) > 0:
+                parts.append(f"<span style='color:{c['NOTE']}'>ℹ{counts['NOTE']}</span>")
+            if counts.get('DERIVED', 0) > 0:
+                parts.append(f"<span style='color:{c['DERIVED']}'>◇{counts['DERIVED']}</span>")
+        return ' '.join(parts)
+
+    def _track_recent_thumbnail(self, series: 'SeriesInfo', recent_series: List,
+                                 recent_thumb_cache: Dict, thumbs_shown: List[int],
+                                 max_thumbs: int, max_recent: int) -> bool:
+        """Track a recently processed series for thumbnail display.
+
+        Args:
+            series: Just-processed series
+            recent_series: List of recent series (modified in place)
+            recent_thumb_cache: Cache of uid -> thumbnail base64 (modified in place)
+            thumbs_shown: Single-element list with count shown (modified in place)
+            max_thumbs: Maximum thumbnails to track before stopping
+            max_recent: Maximum to keep in recent list
+
+        Returns:
+            True if thumbnail was added, False if limit reached
+        """
+        if thumbs_shown[0] >= max_thumbs:
+            return False
+
+        # Get thumbnail data
+        if series._thumbnail_path and self._thumb_cache:
+            recent_thumb_cache[series.uid] = self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
+        elif series.thumbnail:
+            recent_thumb_cache[series.uid] = series.thumbnail
+
+        recent_series.append(series)
+        if len(recent_series) > max_recent:
+            old = recent_series.pop(0)
+            recent_thumb_cache.pop(old.uid, None)
+        thumbs_shown[0] += 1
+        return True
+
+    def _process_series_with_error_capture(self, series: 'SeriesInfo') -> None:
+        """Process a series, capturing any exceptions as series.error.
+
+        Args:
+            series: Series to process
+        """
+        try:
+            self.process_series(series)
+        except Exception as e:
+            series.error = str(e)
+
     def process_all(
         self,
         reprocess: bool = False,
@@ -1885,12 +1830,10 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         import time
         import warnings
         import ipywidgets as widgets
-        from IPython.display import display, clear_output
+        from IPython.display import display
 
-        # Suppress warnings during processing
         warnings.filterwarnings('ignore')
 
-        # Suppress SimpleITK warnings (outputs to stderr, not Python warnings)
         try:
             import SimpleITK as sitk
             sitk.ProcessObject_SetGlobalWarningDisplay(False)
@@ -1899,7 +1842,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         all_series = self.get_all_series()
 
-        # Filter to only unprocessed series unless reprocess=True
+        # Filter series to process
         if reprocess:
             to_process = all_series
             skipped = 0
@@ -1908,11 +1851,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                          if not s.thumbnail and not s._thumbnail_path and not s.is_derived and not s.error]
             skipped = len(all_series) - len(to_process)
 
-        # Add series with errors if retry_errors=True
         if retry_errors and not reprocess:
             error_series = [s for s in all_series if s.error]
             if error_series:
-                # Clear errors so they can be retried
                 for s in error_series:
                     s.error = None
                 to_process.extend(error_series)
@@ -1928,7 +1869,6 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             return self.get_summary()
 
         # Create progress widgets
-        skip_msg = f" ({skipped} already processed)" if skipped > 0 else ""
         progress_bar = widgets.IntProgress(
             value=0, min=0, max=total,
             description='Processing:',
@@ -1936,14 +1876,11 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             style={'bar_color': '#007bff', 'description_width': '80px'},
             layout=widgets.Layout(width='100%')
         )
-        status_html = widgets.HTML(f'<div style="font-family:monospace;">0/{total} series{skip_msg}</div>')
+        status_html = widgets.HTML('')
         current_series_html = widgets.HTML('')
+        status_map_html = widgets.HTML('')
+        recent_thumbs_html = widgets.HTML('')
 
-        # Compact status map (colored dots) + recent thumbnails
-        status_map_html = widgets.HTML('')  # Compact overview of all series
-        recent_thumbs_html = widgets.HTML('')  # Last N full thumbnails
-
-        # Build display
         container = widgets.VBox([
             progress_bar, status_html, current_series_html,
             widgets.HTML('<div style="margin:10px 0 5px;font-size:11px;color:#888;"><b>Status Overview</b> (each square = 1 series)</div>'),
@@ -1953,63 +1890,16 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         ], layout=widgets.Layout(width='100%'))
         display(container)
 
-        # Track recent thumbnails - only show first few so user can verify, then stop
-        # (no value in watching 100K thumbnails scroll by)
+        # Thumbnail tracking state
         max_recent = 4
-        max_thumbs_to_show = 5  # Stop updating after this many
+        max_thumbs_to_show = 5
         recent_series = []
         recent_thumb_cache = {}
-        thumbs_shown = [0]  # Use list for mutability in nested function
+        thumbs_shown = [0]
 
-        # Track timing
+        # Timing state
         start_time = time.time()
         recent_times = []
-
-        def format_time(seconds):
-            if seconds < 60:
-                return f"{seconds:.0f}s"
-            elif seconds < 3600:
-                return f"{seconds // 60:.0f}m {seconds % 60:.0f}s"
-            else:
-                return f"{seconds // 3600:.0f}h {(seconds % 3600) // 60:.0f}m"
-
-        def update_status(i, series):
-            elapsed = time.time() - start_time
-
-            # Calculate ETA from recent processing times
-            if recent_times:
-                avg_time = sum(recent_times[-10:]) / len(recent_times[-10:])
-                remaining = (total - i) * avg_time
-                eta_str = f"ETA: {format_time(remaining)}"
-            else:
-                eta_str = "ETA: calculating..."
-
-            # Update progress bar
-            progress_bar.value = i
-            pct = (i / total) * 100
-
-            # Get current counts
-            counts = self.get_summary()
-
-            # Status HTML with colors
-            c = self.STATUS_COLORS
-            status_parts = [
-                f"<b>{i}/{total}</b> ({pct:.0f}%)",
-                f"Elapsed: {format_time(elapsed)}",
-                eta_str,
-                "|",
-                f"<span style='color:{c['PASS']}'>✓{counts['PASS']}</span>",
-                f"<span style='color:{c['WARNING']}'>⚠{counts['WARNING']}</span>",
-                f"<span style='color:{c['FAIL']}'>✗{counts['FAIL']}</span>",
-                f"<span style='color:{c['ERROR']}'>⊘{counts['ERROR']}</span>",
-            ]
-            if counts.get('NOTE', 0) > 0:
-                status_parts.append(f"<span style='color:{c['NOTE']}'>ℹ{counts['NOTE']}</span>")
-            if counts.get('DERIVED', 0) > 0:
-                status_parts.append(f"<span style='color:{c['DERIVED']}'>◇{counts['DERIVED']}</span>")
-
-            status_html.value = f"<div style='font-family:monospace;padding:5px 0;'>{' '.join(status_parts)}</div>"
-            current_series_html.value = f"<div style='color:#666;font-size:12px;'>Current: {series.label[:60]}</div>"
 
         def render_status_map():
             """Render compact status map - one small square per series."""
@@ -2030,12 +1920,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
             for series in recent_series:
                 color = c.get(series.qc_status, '#ccc')
-
-                # Get thumbnail from cache (loaded once when series added to recent)
                 thumb_b64 = recent_thumb_cache.get(series.uid)
 
                 if thumb_b64:
-                    # Use jpeg for disk cache, png for legacy base64
                     mime = 'image/jpeg' if series._thumbnail_path else 'image/png'
                     img = f'<img src="data:{mime};base64,{thumb_b64}" style="width:100%;display:block;">'
                 elif series.is_derived:
@@ -2054,7 +1941,6 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
             html_parts.append('</div>')
 
-            # Show message when previews stop
             if thumbs_shown[0] >= max_thumbs_to_show:
                 html_parts.append(
                     '<div style="color:#888;font-size:11px;margin-top:8px;font-style:italic;">'
@@ -2064,215 +1950,59 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
             return ''.join(html_parts)
 
+        def update_progress(i: int, series: 'SeriesInfo', eta_str: str = None):
+            """Update all progress displays."""
+            elapsed = time.time() - start_time
+
+            if eta_str is None:
+                if recent_times:
+                    avg_time = sum(recent_times[-10:]) / len(recent_times[-10:])
+                    remaining = (total - i) * avg_time
+                    eta_str = f"ETA: {self._format_time(remaining)}"
+                else:
+                    eta_str = "ETA: calculating..."
+
+            progress_bar.value = i
+            pct = (i / total) * 100
+
+            counts = self.get_summary()
+            status_parts = [
+                f"<b>{i}/{total}</b> ({pct:.0f}%)",
+                f"Elapsed: {self._format_time(elapsed)}",
+                eta_str,
+                "|",
+                self._format_status_counts(counts),
+            ]
+            status_html.value = f"<div style='font-family:monospace;padding:5px 0;'>{' '.join(status_parts)}</div>"
+            current_series_html.value = f"<div style='color:#666;font-size:12px;'>Current: {series.label[:60]}</div>"
+            status_map_html.value = render_status_map()
+
+        def on_series_complete(series: 'SeriesInfo', series_time: float):
+            """Handle completion of a single series."""
+            recent_times.append(series_time)
+            if self._track_recent_thumbnail(series, recent_series, recent_thumb_cache,
+                                            thumbs_shown, max_thumbs_to_show, max_recent):
+                recent_thumbs_html.value = render_recent_thumbs()
+
         # Initial render
         status_map_html.value = render_status_map()
 
         # Auto-enable parallelism for large datasets
         if parallel is None:
             parallel = total > 100
-
         if max_workers is None:
             max_workers = 4 if parallel else 1
 
         if parallel and max_workers > 1:
-            # Parallel processing with ThreadPoolExecutor
-            from concurrent.futures import ThreadPoolExecutor, as_completed, FIRST_COMPLETED, wait
-            import threading
-
-            processed_count = [0]
-            lock = threading.Lock()
-
-            def process_one(series):
-                """Process a single series (thread-safe)."""
-                self.process_series(series)
-                return series
-
-            # Use asyncio for non-blocking parallel processing
-            # This allows Jupyter's event loop to process widget updates
-            import asyncio
-
-            async def run_parallel():
-                loop = asyncio.get_running_loop()
-                nonlocal processed_count
-
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    # Submit all jobs to thread pool, get futures
-                    pending_futures = {
-                        loop.run_in_executor(executor, process_one, s): s
-                        for s in to_process
-                    }
-                    last_update = time.time()
-
-                    while pending_futures:
-                        # Wait for at least one to complete, with timeout for UI updates
-                        done, pending = await asyncio.wait(
-                            pending_futures.keys(),
-                            timeout=0.5,
-                            return_when=asyncio.FIRST_COMPLETED
-                        )
-
-                        for future in done:
-                            series = pending_futures.pop(future)
-                            try:
-                                await future  # Get result/raise exception
-                            except Exception as e:
-                                series.error = str(e)
-
-                            with lock:
-                                processed_count[0] += 1
-                                i = processed_count[0]
-
-                                series_time = time.time() - start_time
-                                recent_times.append(series_time / i if i > 0 else 0)
-
-                                # Update displays
-                                update_status(i, series)
-                                status_map_html.value = render_status_map()
-
-                                # Only show thumbnails for first few series
-                                if thumbs_shown[0] < max_thumbs_to_show:
-                                    if series._thumbnail_path and self._thumb_cache:
-                                        recent_thumb_cache[series.uid] = self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
-                                    elif series.thumbnail:
-                                        recent_thumb_cache[series.uid] = series.thumbnail
-                                    recent_series.append(series)
-                                    if len(recent_series) > max_recent:
-                                        old = recent_series.pop(0)
-                                        recent_thumb_cache.pop(old.uid, None)
-                                    thumbs_shown[0] += 1
-                                    recent_thumbs_html.value = render_recent_thumbs()
-
-                                # Periodic save
-                                if save_interval > 0 and i % save_interval == 0 and self._save_path:
-                                    self.save()
-
-                            last_update = time.time()
-
-                        # Heartbeat: update elapsed time even when no futures complete
-                        now = time.time()
-                        if now - last_update > 1.0 and pending_futures:
-                            elapsed = now - start_time
-                            i = processed_count[0]
-                            remaining = len(pending_futures)
-                            current_series_html.value = (
-                                f"<div style='color:#666;font-size:12px;'>"
-                                f"Processing ({remaining} remaining)...</div>"
-                            )
-                            progress_bar.value = i
-                            pct = (i / total) * 100 if total > 0 else 0
-                            counts = self.get_summary()
-                            c = self.STATUS_COLORS
-                            status_parts = [
-                                f"<b>{i}/{total}</b> ({pct:.0f}%)",
-                                f"Elapsed: {format_time(elapsed)}",
-                                "Processing...",
-                                "|",
-                                f"<span style='color:{c['PASS']}'>✓{counts['PASS']}</span>",
-                                f"<span style='color:{c['WARNING']}'>⚠{counts['WARNING']}</span>",
-                                f"<span style='color:{c['FAIL']}'>✗{counts['FAIL']}</span>",
-                                f"<span style='color:{c['ERROR']}'>⊘{counts['ERROR']}</span>",
-                            ]
-                            status_html.value = f"<div style='font-family:monospace;padding:5px 0;'>{' '.join(status_parts)}</div>"
-                            last_update = now
-
-                        # Yield to event loop to allow widget updates to flush
-                        await asyncio.sleep(0.01)
-
-            # Run the async function
-            # In Jupyter, the event loop is already running, so we need nest_asyncio
-            def run_with_fallback():
-                from concurrent.futures import ThreadPoolExecutor as TPool, wait as sync_wait, FIRST_COMPLETED as FC
-
-                last_series = to_process[0] if to_process else None
-                with TPool(max_workers=max_workers) as executor:
-                    futures = {executor.submit(process_one, s): s for s in to_process}
-                    pending = set(futures.keys())
-                    while pending:
-                        done, pending = sync_wait(pending, timeout=1.0, return_when=FC)
-                        for f in done:
-                            series = futures[f]
-                            try:
-                                f.result()
-                            except Exception as e:
-                                series.error = str(e)
-                            processed_count[0] += 1
-                            last_series = series
-
-                            # Track timing for ETA
-                            series_time = time.time() - start_time
-                            recent_times.append(series_time / processed_count[0] if processed_count[0] > 0 else 0)
-
-                            # Update thumbnail preview for first few series
-                            if thumbs_shown[0] < max_thumbs_to_show:
-                                if series._thumbnail_path and self._thumb_cache:
-                                    recent_thumb_cache[series.uid] = self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
-                                elif series.thumbnail:
-                                    recent_thumb_cache[series.uid] = series.thumbnail
-                                recent_series.append(series)
-                                if len(recent_series) > max_recent:
-                                    old = recent_series.pop(0)
-                                    recent_thumb_cache.pop(old.uid, None)
-                                thumbs_shown[0] += 1
-                                recent_thumbs_html.value = render_recent_thumbs()
-
-                        # Update display periodically
-                        i = processed_count[0]
-                        if last_series:
-                            update_status(i, last_series)
-                        status_map_html.value = render_status_map()
-                        if save_interval > 0 and i % save_interval == 0 and self._save_path:
-                            self.save()
-
-            try:
-                # Try to get or create event loop
-                try:
-                    loop = asyncio.get_running_loop()
-                    # Loop is running (Jupyter) - need nest_asyncio
-                    import nest_asyncio
-                    nest_asyncio.apply()
-                    loop.run_until_complete(run_parallel())
-                except RuntimeError:
-                    # No running loop - create one and run
-                    asyncio.run(run_parallel())
-            except ImportError:
-                # nest_asyncio not available - fall back to synchronous processing
-                print("Note: For better progress display, install nest_asyncio: pip install nest_asyncio")
-                run_with_fallback()
-            except Exception:
-                # Any other error - fall back to synchronous approach
-                import traceback
-                traceback.print_exc()
-                run_with_fallback()
+            self._process_all_parallel(
+                to_process, total, max_workers, start_time, save_interval,
+                update_progress, on_series_complete, render_status_map, status_map_html
+            )
         else:
-            # Sequential processing (original behavior)
-            for i, series in enumerate(to_process):
-                series_start = time.time()
-                update_status(i, series)
-
-                self.process_series(series)
-
-                series_time = time.time() - series_start
-                recent_times.append(series_time)
-
-                # Update displays
-                status_map_html.value = render_status_map()
-
-                # Only show thumbnails for first few series (verify it's working)
-                if thumbs_shown[0] < max_thumbs_to_show:
-                    if series._thumbnail_path and self._thumb_cache:
-                        recent_thumb_cache[series.uid] = self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
-                    elif series.thumbnail:
-                        recent_thumb_cache[series.uid] = series.thumbnail
-                    recent_series.append(series)
-                    if len(recent_series) > max_recent:
-                        old = recent_series.pop(0)
-                        recent_thumb_cache.pop(old.uid, None)
-                    thumbs_shown[0] += 1
-                    recent_thumbs_html.value = render_recent_thumbs()
-
-                # Periodic save
-                if save_interval > 0 and (i + 1) % save_interval == 0 and self._save_path:
-                    self.save()
+            self._process_all_sequential(
+                to_process, total, start_time, save_interval,
+                update_progress, on_series_complete
+            )
 
         # Final save
         if self._save_path:
@@ -2284,29 +2014,167 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         elapsed = time.time() - start_time
         counts = self.get_summary()
 
-        c = self.STATUS_COLORS
         final_status = [
             f"<b>✓ Complete!</b>",
-            f"{total} processed in {format_time(elapsed)}",
+            f"{total} processed in {self._format_time(elapsed)}",
         ]
         if skipped > 0:
             final_status.append(f"({skipped} skipped)")
-        final_status.extend([
-            "|",
-            f"<span style='color:{c['PASS']}'>✓{counts['PASS']}</span>",
-            f"<span style='color:{c['WARNING']}'>⚠{counts['WARNING']}</span>",
-            f"<span style='color:{c['FAIL']}'>✗{counts['FAIL']}</span>",
-            f"<span style='color:{c['ERROR']}'>⊘{counts['ERROR']}</span>",
-        ])
-        if counts.get('NOTE', 0) > 0:
-            final_status.append(f"<span style='color:{c['NOTE']}'>ℹ{counts['NOTE']}</span>")
-        if counts.get('DERIVED', 0) > 0:
-            final_status.append(f"<span style='color:{c['DERIVED']}'>◇{counts['DERIVED']}</span>")
+        final_status.extend(["|", self._format_status_counts(counts)])
 
         status_html.value = f"<div style='font-family:monospace;padding:5px 0;'>{' '.join(final_status)}</div>"
         current_series_html.value = ""
 
         return counts
+
+    def _process_all_sequential(self, to_process: List, total: int, start_time: float,
+                                 save_interval: int, update_progress, on_series_complete):
+        """Process series sequentially.
+
+        Args:
+            to_process: List of series to process
+            total: Total count for progress
+            start_time: Processing start time
+            save_interval: Save every N series
+            update_progress: Callback(i, series, eta_str) to update progress display
+            on_series_complete: Callback(series, time) after each series
+        """
+        import time
+
+        for i, series in enumerate(to_process):
+            series_start = time.time()
+            update_progress(i, series)
+
+            self._process_series_with_error_capture(series)
+
+            series_time = time.time() - series_start
+            on_series_complete(series, series_time)
+
+            if save_interval > 0 and (i + 1) % save_interval == 0 and self._save_path:
+                self.save()
+
+    def _process_all_parallel(self, to_process: List, total: int, max_workers: int,
+                               start_time: float, save_interval: int,
+                               update_progress, on_series_complete, render_status_map,
+                               status_map_html):
+        """Process series in parallel using ThreadPoolExecutor.
+
+        Args:
+            to_process: List of series to process
+            total: Total count for progress
+            max_workers: Number of parallel workers
+            start_time: Processing start time
+            save_interval: Save every N series
+            update_progress: Callback(i, series, eta_str) to update progress display
+            on_series_complete: Callback(series, time) after each series
+            render_status_map: Function to render status map HTML
+            status_map_html: Widget to update with status map
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+        import threading
+        import asyncio
+        import time
+
+        processed_count = [0]
+        lock = threading.Lock()
+
+        def process_one(series):
+            self._process_series_with_error_capture(series)
+            return series
+
+        async def run_parallel():
+            loop = asyncio.get_running_loop()
+            last_update = time.time()
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                pending_futures = {
+                    loop.run_in_executor(executor, process_one, s): s
+                    for s in to_process
+                }
+
+                while pending_futures:
+                    done, _ = await asyncio.wait(
+                        pending_futures.keys(),
+                        timeout=0.5,
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+
+                    for future in done:
+                        series = pending_futures.pop(future)
+                        try:
+                            await future
+                        except Exception as e:
+                            series.error = str(e)
+
+                        with lock:
+                            processed_count[0] += 1
+                            i = processed_count[0]
+                            series_time = (time.time() - start_time) / i if i > 0 else 0
+
+                            update_progress(i, series)
+                            on_series_complete(series, series_time)
+
+                            if save_interval > 0 and i % save_interval == 0 and self._save_path:
+                                self.save()
+
+                        last_update = time.time()
+
+                    # Heartbeat for long-running tasks
+                    now = time.time()
+                    if now - last_update > 1.0 and pending_futures:
+                        i = processed_count[0]
+                        remaining = len(pending_futures)
+                        if to_process:
+                            update_progress(i, to_process[0], "Processing...")
+                        last_update = now
+
+                    await asyncio.sleep(0.01)
+
+        def run_fallback():
+            last_series = to_process[0] if to_process else None
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(process_one, s): s for s in to_process}
+                pending = set(futures.keys())
+
+                while pending:
+                    done, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
+
+                    for f in done:
+                        series = futures[f]
+                        try:
+                            f.result()
+                        except Exception as e:
+                            series.error = str(e)
+
+                        processed_count[0] += 1
+                        last_series = series
+                        series_time = (time.time() - start_time) / processed_count[0]
+
+                        on_series_complete(series, series_time)
+
+                    i = processed_count[0]
+                    if last_series:
+                        update_progress(i, last_series)
+                    status_map_html.value = render_status_map()
+
+                    if save_interval > 0 and i % save_interval == 0 and self._save_path:
+                        self.save()
+
+        # Try asyncio, fall back to synchronous
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+                import nest_asyncio
+                nest_asyncio.apply()
+                loop.run_until_complete(run_parallel())
+            except RuntimeError:
+                asyncio.run(run_parallel())
+        except ImportError:
+            print("Note: For better progress display, install nest_asyncio: pip install nest_asyncio")
+            run_fallback()
+        except Exception:
+            run_fallback()
 
     # Backward compatibility alias
     process_all_interactive = process_all

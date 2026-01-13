@@ -59,7 +59,6 @@ def _filter_4d_generic(
         num_temporal = int(num_temporal)
 
         # Group files by TemporalPositionIdentifier (handles any file order)
-        from typing import Dict
         temporal_groups: Dict[int, List] = {}
         for f in files:
             ds = read_metadata(f)
@@ -93,8 +92,6 @@ def _filter_4d_generic(
         unique_positions = set(slice_positions)
         # If many files but few unique positions, likely 4D
         if len(unique_positions) < len(slice_positions) * 0.5:
-            from collections import Counter
-            pos_counts = Counter(slice_positions)
             num_unique_slices = len(unique_positions)
             estimated_timepoints = len(files) // num_unique_slices
 
