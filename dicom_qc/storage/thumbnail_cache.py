@@ -11,6 +11,20 @@ from pathlib import Path
 from typing import Optional, Set
 
 
+def _sanitize_filename(name: str) -> str:
+    """Sanitize a name for filesystem safety.
+
+    Replaces problematic characters with underscore.
+
+    Args:
+        name: String to sanitize
+
+    Returns:
+        Filesystem-safe string
+    """
+    return "".join(c if c.isalnum() or c in '-_' else '_' for c in str(name))
+
+
 class ThumbnailCache:
     """Manages thumbnail files on disk.
 
@@ -75,14 +89,9 @@ class ThumbnailCache:
         Returns:
             Path like cache_dir/subject/session/scan_id.jpg
         """
-        # Sanitize names for filesystem safety
-        def sanitize(name: str) -> str:
-            # Replace problematic characters with underscore
-            return "".join(c if c.isalnum() or c in '-_' else '_' for c in str(name))
-
-        safe_subject = sanitize(subject)
-        safe_session = sanitize(session)
-        safe_scan = sanitize(scan_id)
+        safe_subject = _sanitize_filename(subject)
+        safe_session = _sanitize_filename(session)
+        safe_scan = _sanitize_filename(scan_id)
         return self.cache_dir / safe_subject / safe_session / f"{safe_scan}.jpg"
 
     def get_relative_path_xnat(self, subject: str, session: str, scan_id: str) -> str:
@@ -96,12 +105,9 @@ class ThumbnailCache:
         Returns:
             Relative path string (e.g., "SUBJ001/SESSION01/5.jpg")
         """
-        def sanitize(name: str) -> str:
-            return "".join(c if c.isalnum() or c in '-_' else '_' for c in str(name))
-
-        safe_subject = sanitize(subject)
-        safe_session = sanitize(session)
-        safe_scan = sanitize(scan_id)
+        safe_subject = _sanitize_filename(subject)
+        safe_session = _sanitize_filename(session)
+        safe_scan = _sanitize_filename(scan_id)
         return f"{safe_subject}/{safe_session}/{safe_scan}.jpg"
 
     def exists(self, series_uid: str) -> bool:

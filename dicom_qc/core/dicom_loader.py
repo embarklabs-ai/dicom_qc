@@ -16,10 +16,28 @@ from dicom_qc.core.volume import DicomVolume
 from dicom_qc.utils.errors import (
     DicomLoadError,
     IncompleteDicomError,
-    CorruptDicomError,
     MissingTagError,
     GeometryError,
 )
+
+# Tags to check for missing geometry metadata
+GEOMETRY_TAGS = ['PixelSpacing', 'SliceThickness', 'ImageOrientationPatient', 'ImagePositionPatient']
+
+
+def _check_missing_geometry_tags(ds) -> List[str]:
+    """Check which geometry tags are missing from a DICOM dataset.
+
+    Args:
+        ds: pydicom Dataset
+
+    Returns:
+        List of missing tag names
+    """
+    missing = []
+    for tag in GEOMETRY_TAGS:
+        if not hasattr(ds, tag) or getattr(ds, tag) is None:
+            missing.append(tag)
+    return missing
 
 logger = logging.getLogger(__name__)
 
@@ -212,14 +230,7 @@ class DicomLoader:
                         orientations.add(orientation)
                     # Check missing geometry tags on first file
                     if not datasets:
-                        if not hasattr(ds, 'PixelSpacing') or ds.PixelSpacing is None:
-                            missing_geometry_tags.append('PixelSpacing')
-                        if not hasattr(ds, 'SliceThickness') or ds.SliceThickness is None:
-                            missing_geometry_tags.append('SliceThickness')
-                        if not hasattr(ds, 'ImageOrientationPatient') or ds.ImageOrientationPatient is None:
-                            missing_geometry_tags.append('ImageOrientationPatient')
-                        if not hasattr(ds, 'ImagePositionPatient') or ds.ImagePositionPatient is None:
-                            missing_geometry_tags.append('ImagePositionPatient')
+                        missing_geometry_tags = _check_missing_geometry_tags(ds)
                     ds = self._validate_and_prepare(ds, file_obj.uri, warnings)
                     if ds is not None:
                         datasets.append(ds)
@@ -324,14 +335,7 @@ class DicomLoader:
             study_uid = getattr(first_dcm, 'StudyInstanceUID', None)
 
             # Check for missing geometry tags
-            if not hasattr(first_dcm, 'PixelSpacing') or first_dcm.PixelSpacing is None:
-                missing_geometry_tags.append('PixelSpacing')
-            if not hasattr(first_dcm, 'SliceThickness') or first_dcm.SliceThickness is None:
-                missing_geometry_tags.append('SliceThickness')
-            if not hasattr(first_dcm, 'ImageOrientationPatient') or first_dcm.ImageOrientationPatient is None:
-                missing_geometry_tags.append('ImageOrientationPatient')
-            if not hasattr(first_dcm, 'ImagePositionPatient') or first_dcm.ImagePositionPatient is None:
-                missing_geometry_tags.append('ImagePositionPatient')
+            missing_geometry_tags = _check_missing_geometry_tags(first_dcm)
 
             if hasattr(first_dcm, 'ImageOrientationPatient') and first_dcm.ImageOrientationPatient is not None:
                 image_orientation = np.array(first_dcm.ImageOrientationPatient, dtype=np.float64)
@@ -349,7 +353,7 @@ class DicomLoader:
             study_uid = None
             image_orientation = np.array([1, 0, 0, 0, 1, 0], dtype=np.float64)
             slice_thickness_tag = None
-            missing_geometry_tags = ['PixelSpacing', 'SliceThickness', 'ImageOrientationPatient', 'ImagePositionPatient']
+            missing_geometry_tags = list(GEOMETRY_TAGS)
 
         return DicomVolume(
             sitk_image=sitk_image,

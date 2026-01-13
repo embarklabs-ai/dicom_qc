@@ -357,47 +357,43 @@ class GeometryQC:
             details=details
         )
 
-    def _get_orientation_label(self, direction_cosines: np.ndarray) -> str:
-        """
-        Convert direction cosines to anatomical orientation label.
-
-        Returns string like 'L' (Left), 'R' (Right), 'A' (Anterior),
-        'P' (Posterior), 'S' (Superior), 'I' (Inferior)
-        """
-        abs_vals = np.abs(direction_cosines)
-        dominant_axis = np.argmax(abs_vals)
-        sign = np.sign(direction_cosines[dominant_axis])
-
-        # LPS coordinate system mapping
-        # X: negative=Right, positive=Left
-        # Y: negative=Anterior, positive=Posterior
-        # Z: negative=Inferior, positive=Superior
-        axis_labels = {
-            0: ('R', 'L'),  # X-axis
-            1: ('A', 'P'),  # Y-axis
-            2: ('I', 'S'),  # Z-axis
-        }
-
-        neg_label, pos_label = axis_labels[dominant_axis]
-        return pos_label if sign > 0 else neg_label
+    # LPS coordinate system mapping
+    # X: negative=Right, positive=Left
+    # Y: negative=Anterior, positive=Posterior
+    # Z: negative=Inferior, positive=Superior
+    AXIS_LABELS = {
+        0: ('R', 'L'),  # X-axis
+        1: ('A', 'P'),  # Y-axis
+        2: ('I', 'S'),  # Z-axis
+    }
 
     def _get_axis_labels(self, direction_cosines: np.ndarray) -> tuple:
-        """Get (negative, positive) labels for a direction."""
+        """Get (negative, positive) orientation labels for a direction vector.
+
+        Args:
+            direction_cosines: 3-element array of direction cosines
+
+        Returns:
+            Tuple of (label_at_negative_end, label_at_positive_end) for the
+            dominant axis direction.
+        """
         abs_vals = np.abs(direction_cosines)
         dominant_axis = np.argmax(abs_vals)
         sign = np.sign(direction_cosines[dominant_axis])
 
-        axis_labels = {
-            0: ('R', 'L'),
-            1: ('A', 'P'),
-            2: ('I', 'S'),
-        }
-
-        neg_label, pos_label = axis_labels[dominant_axis]
+        neg_label, pos_label = self.AXIS_LABELS[dominant_axis]
         if sign > 0:
             return (neg_label, pos_label)
         else:
             return (pos_label, neg_label)
+
+    def _get_orientation_label(self, direction_cosines: np.ndarray) -> str:
+        """Convert direction cosines to the anatomical label in the positive direction.
+
+        Returns string like 'L' (Left), 'R' (Right), 'A' (Anterior),
+        'P' (Posterior), 'S' (Superior), 'I' (Inferior)
+        """
+        return self._get_axis_labels(direction_cosines)[1]
 
     def _get_opposite_label(self, label: str) -> str:
         """Get the opposite anatomical label."""

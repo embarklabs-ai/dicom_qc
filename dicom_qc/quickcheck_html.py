@@ -2,15 +2,57 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Union, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 import shutil
 
 if TYPE_CHECKING:
     from .quickcheck import SeriesInfo
 
 
+def _series_sort_key(item: Tuple[str, Any]) -> Tuple[int, Any]:
+    """Sort key for series that puts numeric series numbers first, then strings.
+
+    Args:
+        item: Tuple of (series_uid, series) from dict.items()
+
+    Returns:
+        Sort key tuple (type_priority, value) where numeric values come first
+    """
+    series = item[1]
+    try:
+        return (0, int(series.series_number))
+    except (ValueError, TypeError):
+        return (1, str(series.series_number or ''))
+
+
 class QuickCheckHTMLMixin:
     """Mixin providing HTML report generation methods for QuickCheck."""
+
+    def _build_ohif_url(self, patient, study) -> Optional[str]:
+        """Build OHIF viewer URL for a study if in XNAT mode.
+
+        Args:
+            patient: PatientInfo object with xnat_subject_id
+            study: StudyInfo object with xnat_experiment_id and xnat_session_label
+
+        Returns:
+            OHIF viewer URL string or None if not in XNAT mode
+        """
+        if not (self._xnat_mode and self._xnat_base_url and self._xnat_project_id):
+            return None
+
+        subj_id = patient.xnat_subject_id
+        exp_id = study.xnat_experiment_id
+        exp_label = study.xnat_session_label
+
+        if not (subj_id and exp_id):
+            return None
+
+        return (
+            f"{self._xnat_base_url}/VIEWER/?"
+            f"subjectId={subj_id}&projectId={self._xnat_project_id}"
+            f"&experimentId={exp_id}&experimentLabel={exp_label}"
+        )
 
     def generate_html_report(
         self,
@@ -271,15 +313,6 @@ class QuickCheckHTMLMixin:
 
     def _html_patient_sections(self) -> str:
         """Generate HTML for patient/study/series sections."""
-        def series_sort_key(item):
-            """Sort by series number numerically (handle str/int/None)."""
-            series = item[1]
-            try:
-                return (0, int(series.series_number))
-            except (ValueError, TypeError):
-                # Non-numeric or None - sort at the end
-                return (1, str(series.series_number or ''))
-
         html = ''
         for patient_id, patient in sorted(self.patients.items()):
             html += f'    <div class="patient-section">\n'
@@ -290,18 +323,9 @@ class QuickCheckHTMLMixin:
                 html += f'            <div class="study-header">{study.label}</div>\n'
                 html += '            <div class="qc-grid">\n'
 
-                # Build OHIF URL context for this study
-                ohif_url = None
-                if self._xnat_mode and self._xnat_base_url and self._xnat_project_id:
-                    subj_id = patient.xnat_subject_id
-                    exp_id = study.xnat_experiment_id
-                    exp_label = study.xnat_session_label
-                    if subj_id and exp_id:
-                        ohif_url = (f"{self._xnat_base_url}/VIEWER/?"
-                                    f"subjectId={subj_id}&projectId={self._xnat_project_id}"
-                                    f"&experimentId={exp_id}&experimentLabel={exp_label}")
+                ohif_url = self._build_ohif_url(patient, study)
 
-                for series_uid, series in sorted(study.series.items(), key=series_sort_key):
+                for series_uid, series in sorted(study.series.items(), key=_series_sort_key):
                     html += self._html_series_thumb(series, ohif_url)
 
                 html += '            </div>\n'
@@ -311,13 +335,6 @@ class QuickCheckHTMLMixin:
 
     def _html_patient_sections_external(self) -> str:
         """Generate HTML for patient/study/series sections with external thumbnails."""
-        def series_sort_key(item):
-            series = item[1]
-            try:
-                return (0, int(series.series_number))
-            except (ValueError, TypeError):
-                return (1, str(series.series_number or ''))
-
         html = ''
         for patient_id, patient in sorted(self.patients.items()):
             html += f'    <div class="patient-section">\n'
@@ -328,18 +345,9 @@ class QuickCheckHTMLMixin:
                 html += f'            <div class="study-header">{study.label}</div>\n'
                 html += '            <div class="qc-grid">\n'
 
-                # Build OHIF URL context for this study
-                ohif_url = None
-                if self._xnat_mode and self._xnat_base_url and self._xnat_project_id:
-                    subj_id = patient.xnat_subject_id
-                    exp_id = study.xnat_experiment_id
-                    exp_label = study.xnat_session_label
-                    if subj_id and exp_id:
-                        ohif_url = (f"{self._xnat_base_url}/VIEWER/?"
-                                    f"subjectId={subj_id}&projectId={self._xnat_project_id}"
-                                    f"&experimentId={exp_id}&experimentLabel={exp_label}")
+                ohif_url = self._build_ohif_url(patient, study)
 
-                for series_uid, series in sorted(study.series.items(), key=series_sort_key):
+                for series_uid, series in sorted(study.series.items(), key=_series_sort_key):
                     thumb_path = self._external_thumb_paths.get(series.uid)
                     html += self._html_series_thumb_external(series, thumb_path, ohif_url)
 

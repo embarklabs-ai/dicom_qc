@@ -183,14 +183,13 @@ class SnapshotGenerator(VolumeRenderer):
         plt.close(fig)
         return encoded
 
-    def create_tripane_thumbnail(
+    def _create_tripane_figure(
         self,
         figsize: Tuple[float, float] = (4.5, 1.5),
         dpi: int = 75,
         show_labels: bool = True
-    ) -> str:
-        """
-        Create a compact 3-pane thumbnail (axial, coronal, sagittal) as base64.
+    ) -> Figure:
+        """Create the 3-pane thumbnail figure with axial, coronal, sagittal views.
 
         Args:
             figsize: Figure size in inches (width, height)
@@ -198,11 +197,8 @@ class SnapshotGenerator(VolumeRenderer):
             show_labels: Whether to show A/C/S labels
 
         Returns:
-            Base64 encoded PNG string
+            matplotlib Figure ready to be saved
         """
-        was_interactive = plt.isinteractive()
-        plt.ioff()
-
         views = ['axial', 'coronal', 'sagittal']
 
         fig, axes = plt.subplots(1, 3, figsize=figsize, dpi=dpi)
@@ -224,6 +220,28 @@ class SnapshotGenerator(VolumeRenderer):
                        bbox=dict(boxstyle='round,pad=0.1', facecolor='black', alpha=0.5))
 
         plt.subplots_adjust(wspace=0.02, left=0, right=1, top=1, bottom=0)
+        return fig
+
+    def create_tripane_thumbnail(
+        self,
+        figsize: Tuple[float, float] = (4.5, 1.5),
+        dpi: int = 75,
+        show_labels: bool = True
+    ) -> str:
+        """Create a compact 3-pane thumbnail (axial, coronal, sagittal) as base64.
+
+        Args:
+            figsize: Figure size in inches (width, height)
+            dpi: Resolution
+            show_labels: Whether to show A/C/S labels
+
+        Returns:
+            Base64 encoded PNG string
+        """
+        was_interactive = plt.isinteractive()
+        plt.ioff()
+
+        fig = self._create_tripane_figure(figsize, dpi, show_labels)
 
         buf = BytesIO()
         fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.02, facecolor='black')
@@ -243,8 +261,7 @@ class SnapshotGenerator(VolumeRenderer):
         quality: int = 85,
         show_labels: bool = True
     ):
-        """
-        Create a compact 3-pane thumbnail saved to a JPEG file.
+        """Create a compact 3-pane thumbnail saved to a JPEG file.
 
         This is the preferred method for large-scale processing (100K+ series)
         as it avoids storing base64 strings in memory.
@@ -267,29 +284,8 @@ class SnapshotGenerator(VolumeRenderer):
         was_interactive = plt.isinteractive()
         plt.ioff()
 
-        views = ['axial', 'coronal', 'sagittal']
+        fig = self._create_tripane_figure(figsize, dpi, show_labels)
 
-        fig, axes = plt.subplots(1, 3, figsize=figsize, dpi=dpi)
-        fig.patch.set_facecolor('black')
-
-        for ax, view in zip(axes, views):
-            num_slices = self.get_num_slices(view)
-            center_idx = num_slices // 2
-            img = self.apply_window(self.extract_slice(view, center_idx))
-            aspect = self.calculate_aspect_ratio(view)
-            origin = self.get_image_origin(view)
-
-            ax.imshow(img, cmap='gray', aspect=aspect, origin=origin, interpolation='bilinear')
-            ax.axis('off')
-            ax.set_facecolor('black')
-            if show_labels:
-                ax.text(0.5, 0.02, view[0].upper(), transform=ax.transAxes,
-                       fontsize=8, color='white', ha='center', va='bottom',
-                       bbox=dict(boxstyle='round,pad=0.1', facecolor='black', alpha=0.5))
-
-        plt.subplots_adjust(wspace=0.02, left=0, right=1, top=1, bottom=0)
-
-        # Save as JPEG (much smaller than PNG, ~5-15KB vs 10-50KB)
         fig.savefig(
             output_path,
             format='jpeg',
