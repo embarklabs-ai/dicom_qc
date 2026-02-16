@@ -1,6 +1,5 @@
 """Generate self-contained HTML QC reports."""
 
-import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path

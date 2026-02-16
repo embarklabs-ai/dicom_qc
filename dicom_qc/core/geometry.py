@@ -1,7 +1,7 @@
 """Geometry and orientation QC checks for DICOM volumes."""
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Literal, Optional
+from typing import Dict, Any, List, Literal
 from datetime import datetime
 
 import numpy as np
@@ -65,7 +65,6 @@ class GeometryQC:
 
     # Threshold for anisotropy detection (ratio of largest to smallest voxel dimension)
     ANISOTROPY_WARNING = 2.0  # Warning if ratio > 2
-    ANISOTROPY_FAIL = 4.0     # Fail if ratio > 4
 
     # JPEG-2000 transfer syntax UIDs that may have viewer compatibility issues
     JPEG2000_UIDS = {
@@ -425,13 +424,20 @@ class GeometryQC:
         thick slices relative to in-plane resolution.
 
         Returns:
-            QCResult with WARNING if moderately anisotropic, FAIL if severe
+            QCResult with WARNING if anisotropic (ratio > 2x)
         """
         spacing = self.volume.pixel_spacing
         slice_thickness = self.volume.slice_thickness
         if slice_thickness is None or slice_thickness <= 0:
-            # Fallback to third spacing element or first element
-            slice_thickness = spacing[2] if len(spacing) > 2 else spacing[0]
+            if len(spacing) > 2:
+                slice_thickness = spacing[2]
+            else:
+                return QCResult(
+                    status='WARNING',
+                    check_name='Voxel Anisotropy',
+                    message='Cannot assess anisotropy: slice thickness unavailable',
+                    details={'pixel_spacing_mm': list(spacing), 'slice_thickness_mm': None}
+                )
 
         # Get all three dimensions
         dims = [spacing[0], spacing[1], slice_thickness]
@@ -449,14 +455,7 @@ class GeometryQC:
             'max_dimension_mm': float(max_dim),
         }
 
-        if ratio > self.ANISOTROPY_FAIL:
-            return QCResult(
-                status='WARNING',
-                check_name='Voxel Anisotropy',
-                message=f'Severely anisotropic: {ratio:.1f}x ratio ({max_dim:.2f}/{min_dim:.2f} mm)',
-                details=details
-            )
-        elif ratio > self.ANISOTROPY_WARNING:
+        if ratio > self.ANISOTROPY_WARNING:
             return QCResult(
                 status='WARNING',
                 check_name='Voxel Anisotropy',

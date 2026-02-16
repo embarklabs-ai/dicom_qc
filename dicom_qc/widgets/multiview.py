@@ -109,7 +109,7 @@ class MultiViewViewer(VolumeRenderer):
     def _check_interactive_backend(self) -> bool:
         """Check if ipympl (interactive matplotlib) is available."""
         try:
-            import ipympl
+            import ipympl  # noqa: F401
             return True
         except ImportError:
             return False
@@ -527,10 +527,7 @@ class MultiViewViewer(VolumeRenderer):
 
     def _update_info(self):
         """Update the info display."""
-        s, p, l = self.position
-        s_mm = s * self.lps_spacing[0]
-        p_mm = p * self.lps_spacing[1]
-        l_mm = l * self.lps_spacing[2]
+        s, p, lat = self.position
 
         # Calculate actual slice spacing from slice locations
         slice_locs = self.volume.slice_locations
@@ -560,19 +557,19 @@ class MultiViewViewer(VolumeRenderer):
         self.info_output.value = f'''
             <div style="background:#f1f5f9;padding:8px 16px;font-size:11px;color:#475569;
                         display:flex;flex-wrap:wrap;gap:16px;align-items:center;border-top:1px solid #e2e8f0;">
-                <span><span style="color:#64748b;font-weight:500;">Pos:</span> S={s}, P={p}, L={l}</span>
+                <span><span style="color:#64748b;font-weight:500;">Pos:</span> S={s}, P={p}, L={lat}</span>
                 <span><span style="color:#64748b;font-weight:500;">Window:</span> C={self.window[0]:.0f}, W={self.window[1]:.0f}</span>
                 <span>{thickness_info}</span>
                 <span>{pixel_info}</span>
             </div>
         '''
 
-    def set_position(self, s: int, p: int, l: int):
+    def set_position(self, s: int, p: int, lat: int):
         """Set crosshair position programmatically."""
         self.position = [
             int(np.clip(s, 0, self.lps_array.shape[0] - 1)),
             int(np.clip(p, 0, self.lps_array.shape[1] - 1)),
-            int(np.clip(l, 0, self.lps_array.shape[2] - 1)),
+            int(np.clip(lat, 0, self.lps_array.shape[2] - 1)),
         ]
         # Update sliders (this will trigger _render_figure via observers)
         self.slice_sliders['axial'].value = self.position[0]
@@ -747,11 +744,11 @@ class DicomHeaderViewer:
 
         # Filter available tags
         matches = []
-        for tag_str, keyword, display in self._all_tags:
-            if search in tag_str.lower() or search in keyword.lower() or search in display.lower():
+        for tag_str, keyword, display_name in self._all_tags:
+            if search in tag_str.lower() or search in keyword.lower() or search in display_name.lower():
                 # Don't show already selected tags
                 if (tag_str, keyword) not in self._selected_tags:
-                    matches.append((display, (tag_str, keyword)))
+                    matches.append((display_name, (tag_str, keyword)))
                 if len(matches) >= 20:  # Limit suggestions
                     break
 
@@ -790,7 +787,7 @@ class DicomHeaderViewer:
 
         # First, add tags that exist in current file (with their tag_str)
         found_keywords = set()
-        for tag_str, keyword, display in self._all_tags:
+        for tag_str, keyword, _display_name in self._all_tags:
             if keyword in group_keywords and keyword not in existing_keywords:
                 self._selected_tags.append((tag_str, keyword))
                 found_keywords.add(keyword)

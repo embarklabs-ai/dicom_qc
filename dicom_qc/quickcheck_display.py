@@ -1,5 +1,6 @@
 """Interactive Jupyter display for QuickCheck."""
 
+from html import escape
 from typing import Optional
 
 
@@ -245,11 +246,11 @@ class QuickCheckDisplayMixin:
             return widgets.HTML(f'''
                 <div style="flex:1;min-width:0;">
                     <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">
-                        <span style="color:#1e293b;font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{series.label}</span>
+                        <span style="color:#1e293b;font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{escape(series.label)}</span>
                         <span style="background:{style['badge_bg']};color:{style['badge_text']};padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600;flex-shrink:0;">{series.qc_status}</span>
                     </div>
                     <div style="color:#64748b;font-size:11px;">
-                        {subject_label} · {session_label}
+                        {escape(subject_label)} · {escape(session_label)}
                     </div>
                 </div>
             ''')
@@ -519,7 +520,7 @@ class QuickCheckDisplayMixin:
                     display(widgets.HTML(f'''
                         <div style="padding:30px;margin:16px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;">
                             <div style="color:#dc2626;font-weight:600;margin-bottom:8px;">Error Loading Images</div>
-                            <div style="color:#991b1b;font-size:13px;">{e}</div>
+                            <div style="color:#991b1b;font-size:13px;">{escape(str(e))}</div>
                         </div>
                     '''))
 
@@ -550,7 +551,9 @@ class QuickCheckDisplayMixin:
                 loaded_data['dicom_files'] = dicom_files
 
             loaded_data['header_loaded'] = True
+            view_toggle.unobserve(on_toggle_change, names='value')
             view_toggle.value = 'header'
+            view_toggle.observe(on_toggle_change, names='value')
             render_header_view()
 
         def show_viewer(series, patient=None, study=None):
@@ -568,7 +571,9 @@ class QuickCheckDisplayMixin:
                     dicom_files = [p for p in series._file_paths if p]
                 loaded_data['dicom_files'] = dicom_files
 
+            view_toggle.unobserve(on_toggle_change, names='value')
             view_toggle.value = 'image'
+            view_toggle.observe(on_toggle_change, names='value')
 
             # Load images if not already loaded
             if not loaded_data['image_loaded']:
@@ -649,18 +654,18 @@ class QuickCheckDisplayMixin:
                             if thumbnail_b64:
                                 img = f'<img src="data:image/jpeg;base64,{thumbnail_b64}" style="width:100%;max-width:100%;display:block;border-radius:6px;">'
                             elif series.is_derived:
-                                img = f'<div style="height:60px;width:100%;background:linear-gradient(135deg,#4c1d95,#7c3aed);color:white;display:flex;align-items:center;justify-content:center;font-size:13px;border-radius:6px;font-weight:500;">{series.modality}</div>'
+                                img = f'<div style="height:60px;width:100%;background:linear-gradient(135deg,#4c1d95,#7c3aed);color:white;display:flex;align-items:center;justify-content:center;font-size:13px;border-radius:6px;font-weight:500;">{escape(series.modality)}</div>'
                             elif series.error:
-                                img = f'<div style="height:60px;width:100%;background:#fee2e2;color:#991b1b;display:flex;align-items:center;justify-content:center;font-size:10px;padding:8px;text-align:center;border-radius:6px;box-sizing:border-box;">{series.error[:35]}...</div>'
+                                img = f'<div style="height:60px;width:100%;background:#fee2e2;color:#991b1b;display:flex;align-items:center;justify-content:center;font-size:10px;padding:8px;text-align:center;border-radius:6px;box-sizing:border-box;">{escape(series.error[:35])}...</div>'
                             else:
-                                img = f'<div style="height:60px;width:100%;background:#e5e7eb;color:#6b7280;display:flex;align-items:center;justify-content:center;border-radius:6px;font-size:12px;">No preview</div>'
+                                img = '<div style="height:60px;width:100%;background:#e5e7eb;color:#6b7280;display:flex;align-items:center;justify-content:center;border-radius:6px;font-size:12px;">No preview</div>'
 
                             # Issue list
                             issue_html = ''
                             if has_issues:
                                 issues = [r for r in series.qc_report.results if r.status in ('FAIL', 'WARNING', 'NOTE')]
                                 if issues:
-                                    issue_list = ', '.join(r.check_name for r in issues)
+                                    issue_list = ', '.join(escape(r.check_name) for r in issues)
                                     issue_html = f'<div style="margin-top:8px;padding:6px 10px;font-size:11px;color:{style["text"]};background:rgba(0,0,0,0.04);border-radius:4px;word-wrap:break-word;">{issue_list}</div>'
 
                             # Badge colors
@@ -673,9 +678,9 @@ class QuickCheckDisplayMixin:
                                 <div style="position:relative;width:100%;box-sizing:border-box;">
                                     <span style="position:absolute;top:0;right:0;background:{badge_bg};color:{badge_text};padding:4px 10px;border-radius:4px;font-size:10px;font-weight:600;">{series.qc_status}</span>
                                     <div style="margin-bottom:10px;padding-right:75px;box-sizing:border-box;">
-                                        <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Subject</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{patient.label}</span></div>
-                                        <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Session</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{study.label}</span></div>
-                                        <div style="display:flex;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Series</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{series.label}</span></div>
+                                        <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Subject</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{escape(patient.label)}</span></div>
+                                        <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Session</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{escape(study.label)}</span></div>
+                                        <div style="display:flex;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Series</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{escape(series.label)}</span></div>
                                     </div>
                                     {img}
                                     {issue_html}
@@ -850,31 +855,36 @@ class QuickCheckDisplayMixin:
             print("Warning: Database not available, falling back to legacy display")
             return self.display(use_pagination=False)
 
-        # Get summary counts from database
-        counts = self._db.get_summary_counts()
-        total_series = self._db.get_total_series_count()
+        # Use in-memory counts as source of truth (database may have stale data until saved)
+        counts = self.get_summary()
+        all_series_list = self.get_all_series()
+        total_series = len(all_series_list)
         c = self.STATUS_COLORS
 
-        # Status styles
+        # Build series lookup by (patient_id, study_uid, series_uid) for accurate matching
+        # Must use same key logic as _sync_series_to_db to match database rows
+        series_lookup = {}
+        for patient_id, patient in self.patients.items():
+            for study_key, study in patient.studies.items():
+                for series_key, series in study.series.items():
+                    effective_study_uid, effective_series_uid = self._get_effective_uids(series, study, study_key)
+                    series_lookup[(patient_id, effective_study_uid, effective_series_uid)] = (series, patient, study)
+
+        # Status styles (same as non-paginated display)
         STATUS_STYLES = {
-            'PASS': {'bg': '#f0fff4', 'border': '#28a745', 'text': '#166534'},
-            'WARNING': {'bg': '#fffbeb', 'border': '#ffc107', 'text': '#78350f'},
-            'FAIL': {'bg': '#fff1f2', 'border': '#dc3545', 'text': '#991b1b'},
-            'ERROR': {'bg': '#f8f9fa', 'border': '#6c757d', 'text': '#4b5563'},
-            'PENDING': {'bg': '#ecfeff', 'border': '#17a2b8', 'text': '#0e7490'},
-            'DERIVED': {'bg': '#faf5ff', 'border': '#9c27b0', 'text': '#6b21a8'},
-            'NOTE': {'bg': '#ecfeff', 'border': '#17a2b8', 'text': '#0e7490'},
+            'PASS': {'bg': '#f0fdf4', 'border': '#22c55e', 'badge_bg': '#22c55e', 'badge_text': '#fff', 'accent': '#16a34a', 'text': '#166534'},
+            'WARNING': {'bg': '#fffbeb', 'border': '#f59e0b', 'badge_bg': '#f59e0b', 'badge_text': '#78350f', 'accent': '#d97706', 'text': '#92400e'},
+            'FAIL': {'bg': '#fef2f2', 'border': '#ef4444', 'badge_bg': '#ef4444', 'badge_text': '#fff', 'accent': '#dc2626', 'text': '#991b1b'},
+            'ERROR': {'bg': '#f9fafb', 'border': '#6b7280', 'badge_bg': '#6b7280', 'badge_text': '#fff', 'accent': '#4b5563', 'text': '#374151'},
+            'DERIVED': {'bg': '#faf5ff', 'border': '#a855f7', 'badge_bg': '#a855f7', 'badge_text': '#fff', 'accent': '#9333ea', 'text': '#6b21a8'},
+            'NOTE': {'bg': '#ecfeff', 'border': '#06b6d4', 'badge_bg': '#06b6d4', 'badge_text': '#fff', 'accent': '#0891b2', 'text': '#155e75'},
+            'PENDING': {'bg': '#f9fafb', 'border': '#9ca3af', 'badge_bg': '#9ca3af', 'badge_text': '#fff', 'accent': '#6b7280', 'text': '#6b7280'},
         }
 
         # State
         current_page = [0]
-        filters = {
-            'status': None,
-            'patient_id': None,
-            'study_key': None,
-            'series_number': None,
-            'description_like': None,
-        }
+        selected_series = [None]
+        card_widgets = {}
 
         # Build filter options from database
         patient_options = [('All Subjects', None)] + [
@@ -902,8 +912,6 @@ class QuickCheckDisplayMixin:
                     f'<span style="background:{c[status]};color:{text_color};padding:2px 8px;'
                     f'border-radius:4px;font-size:11px;font-weight:600;">{count} {status}</span>'
                 )
-        summary_html = widgets.HTML(' '.join(summary_parts))
-
         # === Filter widgets ===
         status_dropdown = widgets.Dropdown(
             options=status_options, value=None,
@@ -927,12 +935,12 @@ class QuickCheckDisplayMixin:
         )
 
         # === Pagination controls ===
-        prev_btn = widgets.Button(
+        prev_page_btn = widgets.Button(
             description='< Prev',
             disabled=True,
             layout=widgets.Layout(width='80px')
         )
-        next_btn = widgets.Button(
+        next_page_btn = widgets.Button(
             description='Next >',
             layout=widgets.Layout(width='80px')
         )
@@ -940,35 +948,66 @@ class QuickCheckDisplayMixin:
 
         # === List area ===
         list_area = widgets.Output(layout=widgets.Layout(
-            height='75vh',
+            height='80vh',
+            width='98%',
             overflow_y='auto',
-            background='#fafafa',
-            width='100%'
+            background='#fafafa'
         ))
+        list_area.add_class('qc-list-area')
 
-        # === Content panel (for viewer) ===
+        # === Right panel: content area with toggle ===
         content_panel = widgets.Output(layout=widgets.Layout(
-            min_height='75vh',
+            min_height='80vh',
             overflow='auto',
             border='1px solid #e2e8f0',
             border_radius='6px',
             background='#ffffff'
         ))
 
+        # Toggle switch for Image/Header view
+        view_toggle = widgets.ToggleButtons(
+            options=[('Image', 'image'), ('Header', 'header')],
+            value='image',
+            button_style='',
+            layout=widgets.Layout(margin='0 10px')
+        )
+
+        toggle_container = widgets.VBox(
+            [content_panel],
+            layout=widgets.Layout(width='100%', min_height='80vh')
+        )
+
         placeholder = widgets.HTML(
             '<div style="color:#64748b;padding:40px;text-align:center;font-size:14px;'
-            'background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;min-height:500px;'
+            'background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;min-height:700px;'
             'display:flex;align-items:center;justify-content:center;">Select a series to view</div>'
         )
+        toggle_container.layout.display = 'none'
 
         # Viewer state
         loaded_data = {
             'series': None,
+            'patient': None,
+            'study': None,
+            'dicom_files': None,
             'volume': None,
-            'image_viewer': None,
+            'image_loaded': False,
+            'header_loaded': False,
             'header_viewer': None,
             'header_settings': None,
+            'image_viewer': None,
         }
+
+        # Panel references for show/hide
+        panel_refs = {'left': None, 'right': None}
+
+        def get_series_context_from_row(row):
+            """Get (SeriesInfo, PatientInfo, StudyInfo) tuple from database row."""
+            # Build lookup key from row data
+            patient_id = row['patient_id']
+            study_uid = row['study_uid']
+            series_uid = row['series_uid']
+            return series_lookup.get((patient_id, study_uid, series_uid))
 
         def update_session_options(change):
             """Update session dropdown when subject changes."""
@@ -976,7 +1015,7 @@ class QuickCheckDisplayMixin:
             if patient_id:
                 studies = self._db.get_study_options(patient_id)
                 options = [('All Sessions', None)] + [
-                    (f"{s[1]}: {s[2]}" if s[2] else s[1], s[0])  # date: description, study_uid
+                    (s[3] if s[3] else (f"{s[1]}: {s[2]}" if s[2] else s[1]), s[0])
                     for s in studies
                 ]
                 session_dropdown.options = options
@@ -999,26 +1038,421 @@ class QuickCheckDisplayMixin:
                 f['description_like'] = f"%{description_filter.value}%"
             return f
 
+        def clear_content():
+            """Clear content and reset state."""
+            if loaded_data['header_viewer'] is not None:
+                loaded_data['header_settings'] = loaded_data['header_viewer'].get_settings()
+            if loaded_data['image_viewer'] is not None:
+                loaded_data['image_viewer'].close()
+            loaded_data['series'] = None
+            loaded_data['patient'] = None
+            loaded_data['study'] = None
+            loaded_data['dicom_files'] = None
+            loaded_data['volume'] = None
+            loaded_data['image_loaded'] = False
+            loaded_data['header_loaded'] = False
+            loaded_data['header_viewer'] = None
+            loaded_data['image_viewer'] = None
+            with content_panel:
+                clear_output()
+
+        def update_selection(new_series):
+            """Update selection indicator without re-rendering the list."""
+            old_series = selected_series[0]
+
+            if old_series is not None and id(old_series) in card_widgets:
+                old_info = card_widgets[id(old_series)]
+                old_info['card'].layout.box_shadow = None
+                old_info['view_btn'].description = 'View'
+                old_info['view_btn'].button_style = 'info'
+
+            selected_series[0] = new_series
+            if new_series is not None and id(new_series) in card_widgets:
+                new_info = card_widgets[id(new_series)]
+                border_color = new_info['border_color']
+                new_info['card'].layout.box_shadow = f'0 0 0 3px {border_color}'
+                new_info['view_btn'].description = '● View'
+                new_info['view_btn'].button_style = 'success'
+
+        def hide_placeholder():
+            """Hide placeholder and show viewer when content is shown."""
+            placeholder.layout.display = 'none'
+            toggle_container.layout.display = 'flex'
+            if panel_refs['right']:
+                panel_refs['right'].layout.display = 'flex'
+            if panel_refs['left']:
+                panel_refs['left'].layout.width = '365px'
+                panel_refs['left'].layout.flex = '0 0 auto'
+
+        def close_viewer():
+            """Close the viewer and expand thumbnail list to full width."""
+            if loaded_data['header_viewer'] is not None:
+                loaded_data['header_settings'] = loaded_data['header_viewer'].get_settings()
+            update_selection(None)
+            if panel_refs['right']:
+                panel_refs['right'].layout.display = 'none'
+            if panel_refs['left']:
+                panel_refs['left'].layout.width = '100%'
+                panel_refs['left'].layout.flex = '1 1 auto'
+
+        def make_viewer_header(series, patient, study):
+            """Create the viewer header HTML."""
+            style = STATUS_STYLES.get(series.qc_status, STATUS_STYLES['PENDING'])
+            subject_label = patient.label if patient else 'Unknown'
+            session_label = study.label if study else 'Unknown'
+
+            return widgets.HTML(f'''
+                <div style="flex:1;min-width:0;">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">
+                        <span style="color:#1e293b;font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{escape(series.label)}</span>
+                        <span style="background:{style['badge_bg']};color:{style['badge_text']};padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600;flex-shrink:0;">{series.qc_status}</span>
+                    </div>
+                    <div style="color:#64748b;font-size:11px;">
+                        {escape(subject_label)} · {escape(session_label)}
+                    </div>
+                </div>
+            ''')
+
+        def make_header_bar(series, patient, study):
+            """Create unified header bar with series info and toggle."""
+            style = STATUS_STYLES.get(series.qc_status, STATUS_STYLES['PENDING'])
+            header_content = make_viewer_header(series, patient, study)
+
+            prev_btn = widgets.Button(
+                description='', icon='chevron-left', button_style='',
+                tooltip='Previous series', layout=widgets.Layout(width='32px', height='32px')
+            )
+            prev_btn.on_click(lambda _: navigate_series(-1))
+
+            next_btn = widgets.Button(
+                description='', icon='chevron-right', button_style='',
+                tooltip='Next series', layout=widgets.Layout(width='32px', height='32px')
+            )
+            next_btn.on_click(lambda _: navigate_series(1))
+
+            nav_buttons = widgets.HBox([prev_btn, next_btn], layout=widgets.Layout(gap='4px'))
+
+            close_btn = widgets.Button(
+                description='', icon='times', button_style='',
+                tooltip='Close viewer', layout=widgets.Layout(width='32px', height='32px')
+            )
+            close_btn.on_click(lambda _: close_viewer())
+
+            controls = widgets.HBox(
+                [view_toggle, nav_buttons, close_btn],
+                layout=widgets.Layout(gap='8px', flex='0 0 auto', align_items='center')
+            )
+
+            header_bar = widgets.HBox(
+                [header_content, controls],
+                layout=widgets.Layout(
+                    padding='12px 16px', background=style['bg'],
+                    border_bottom=f'2px solid {style["border"]}',
+                    align_items='center', justify_content='space-between',
+                )
+            )
+            return header_bar
+
+        def make_issues_banner(series):
+            """Create QC issues banner if there are issues."""
+            if not (series.qc_report and series.qc_status in ('FAIL', 'WARNING', 'NOTE')):
+                return None
+            issues = [r for r in series.qc_report.results if r.status in ('FAIL', 'WARNING', 'NOTE')]
+            if not issues:
+                return None
+
+            style = STATUS_STYLES.get(series.qc_status, STATUS_STYLES['NOTE'])
+            issue_items = ' · '.join(f'<b>{r.check_name}:</b> {r.message}' for r in issues)
+            return widgets.HTML(f'''
+                <div style="padding:10px 16px;background:{style['bg']};border-bottom:1px solid {style['border']};font-size:11px;color:{style['accent']};">
+                    {issue_items}
+                </div>
+            ''')
+
+        def get_filtered_series_list():
+            """Get list of (series, patient, study) tuples matching current DB filters."""
+            f = get_current_filters()
+            rows = self._db.get_filtered_series(f, limit=10000, offset=0)
+            result = []
+            for row in rows:
+                context = get_series_context_from_row(row)
+                if context:
+                    result.append(context)
+            return result
+
+        def navigate_series(direction):
+            """Navigate to prev (-1) or next (+1) series in filtered list."""
+            current = loaded_data['series']
+            if current is None:
+                return
+
+            filtered = get_filtered_series_list()
+            if not filtered:
+                return
+
+            current_idx = None
+            for i, (s, p, st) in enumerate(filtered):
+                if s is current:
+                    current_idx = i
+                    break
+
+            if current_idx is None:
+                return
+
+            new_idx = current_idx + direction
+            if new_idx < 0 or new_idx >= len(filtered):
+                return
+
+            if loaded_data['header_viewer'] is not None:
+                loaded_data['header_settings'] = loaded_data['header_viewer'].get_settings()
+
+            new_series, new_patient, new_study = filtered[new_idx]
+            update_selection(new_series)
+
+            loaded_data['series'] = new_series
+            loaded_data['patient'] = new_patient
+            loaded_data['study'] = new_study
+            dicom_files = new_series.files if new_series.files else []
+            if not dicom_files and new_series._file_paths:
+                dicom_files = [p for p in new_series._file_paths if p]
+            loaded_data['dicom_files'] = dicom_files
+            loaded_data['volume'] = None
+            loaded_data['image_loaded'] = False
+
+            # Check if new series is on the current page; if not, navigate to the right page
+            if id(new_series) not in card_widgets:
+                new_page = new_idx // self.PAGE_SIZE
+                current_page[0] = new_page
+                render_page()
+
+            if view_toggle.value == 'header':
+                render_header_view()
+            else:
+                render_image_view()
+
+        def render_header_view():
+            """Render the header view in the content panel."""
+            from dicom_qc.widgets import DicomHeaderViewer
+            series = loaded_data['series']
+            patient = loaded_data['patient']
+            study = loaded_data['study']
+            dicom_files = loaded_data['dicom_files']
+
+            with content_panel:
+                clear_output(wait=True)
+                display(make_header_bar(series, patient, study))
+
+                if dicom_files:
+                    viewer = DicomHeaderViewer(
+                        dicom_files, title=series.label,
+                        initial_settings=loaded_data['header_settings'], show_title=False
+                    )
+                    loaded_data['header_viewer'] = viewer
+                    viewer.display()
+                else:
+                    display(widgets.HTML('<div style="color:#64748b;padding:30px;">No DICOM files available for this series</div>'))
+
+        def render_image_view():
+            """Render the image view in the content panel."""
+            from dicom_qc.widgets import MultiViewViewer
+            series = loaded_data['series']
+            patient = loaded_data['patient']
+            study = loaded_data['study']
+            dicom_files = loaded_data['dicom_files']
+            volume = loaded_data['volume']
+
+            if loaded_data['image_viewer'] is not None:
+                loaded_data['image_viewer'].close()
+                loaded_data['image_viewer'] = None
+
+            with content_panel:
+                clear_output(wait=True)
+                display(make_header_bar(series, patient, study))
+
+                issues_banner = make_issues_banner(series)
+                if issues_banner:
+                    display(issues_banner)
+
+                if series.error:
+                    display(widgets.HTML(f'''
+                        <div style="padding:30px;margin:16px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;">
+                            <div style="color:#dc2626;font-weight:600;margin-bottom:8px;">Error Loading Series</div>
+                            <div style="color:#991b1b;font-size:13px;">{series.error}</div>
+                        </div>
+                    '''))
+                    return
+
+                if series.is_derived:
+                    display(widgets.HTML(f'''
+                        <div style="padding:40px;margin:16px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:6px;text-align:center;">
+                            <div style="font-size:20px;margin-bottom:10px;color:#7c3aed;font-weight:600;">{series.modality}</div>
+                            <div style="color:#6b21a8;">Derived/Non-image data</div>
+                            {f'<div style="margin-top:15px;font-size:12px;color:#9333ea;">{series.derived_info}</div>' if series.derived_info else ''}
+                        </div>
+                    '''))
+                    return
+
+                if volume is None:
+                    display(widgets.HTML('''
+                        <div style="padding:60px;text-align:center;background:#f8fafc;">
+                            <div style="color:#64748b;font-size:16px;margin-bottom:16px;">Images not loaded yet</div>
+                        </div>
+                    '''))
+                    load_btn = widgets.Button(description='Load Images', button_style='primary', icon='image')
+                    load_btn.on_click(lambda _: load_images())
+                    display(load_btn)
+                    return
+
+                display(widgets.HTML('''
+                    <div style="padding:8px 16px;background:#f8fafc;color:#64748b;font-size:11px;border-bottom:1px solid #e2e8f0;">
+                        Note: Image may appear blank for 30-60s while pixel data transfers to browser.
+                    </div>
+                '''))
+
+                viewer = MultiViewViewer(volume, dicom_files=dicom_files, show_title=False)
+                loaded_data['image_viewer'] = viewer
+                viewer.display()
+
+        def load_images():
+            """Load DICOM images for the current series."""
+            import time
+            series = loaded_data['series']
+            dicom_files = loaded_data['dicom_files']
+
+            with content_panel:
+                clear_output(wait=True)
+                lst = STATUS_STYLES.get(series.qc_status, STATUS_STYLES['PENDING'])
+                display(widgets.HTML(f'''
+                    <div style="padding:12px 16px;background:{lst['bg']};border-bottom:2px solid {lst['border']};border-radius:6px 6px 0 0;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;">
+                            <div style="color:#1e293b;font-weight:600;font-size:14px;">{series.label}</div>
+                            <span style="background:{lst['badge_bg']};color:{lst['badge_text']};padding:5px 14px;border-radius:4px;font-size:11px;font-weight:600;">{series.qc_status}</span>
+                        </div>
+                    </div>
+                    <div style="padding:60px;text-align:center;background:#f8fafc;">
+                        <div style="display:inline-block;width:40px;height:40px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:spin 1s linear infinite;"></div>
+                        <div style="margin-top:20px;font-size:16px;color:#475569;">Loading DICOM data...</div>
+                        <div style="margin-top:10px;font-size:12px;color:#94a3b8;">Image may appear blank for 30-60s while pixel data transfers to browser.</div>
+                        <style>@keyframes spin {{ to {{ transform: rotate(360deg); }} }}</style>
+                    </div>
+                '''))
+
+            time.sleep(0.1)
+
+            try:
+                try:
+                    import SimpleITK as sitk
+                    sitk.ProcessObject_SetGlobalWarningDisplay(False)
+                except Exception:
+                    pass
+
+                if series._xnat_files:
+                    files = self._get_xnat_files(series)
+                    if not files:
+                        raise ValueError("No DICOM files found")
+                    volume = self.loader.load_from_xnat(files)
+                else:
+                    from pathlib import Path
+                    series_files = series.files if series.files else dicom_files
+                    if series_files:
+                        first_file = series_files[0]
+                        if isinstance(first_file, (str, Path)):
+                            series_dir = Path(first_file).parent
+                        else:
+                            series_dir = self.data_dir
+                    else:
+                        series_dir = self.data_dir
+                    volume = self.loader.load_from_path_simpleitk(series_dir, series_uid=series.uid)
+
+                loaded_data['volume'] = volume
+                loaded_data['image_loaded'] = True
+                render_image_view()
+
+            except Exception as e:
+                with content_panel:
+                    clear_output(wait=True)
+                    display(widgets.HTML(f'''
+                        <div style="padding:30px;margin:16px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;">
+                            <div style="color:#dc2626;font-weight:600;margin-bottom:8px;">Error Loading Images</div>
+                            <div style="color:#991b1b;font-size:13px;">{escape(str(e))}</div>
+                        </div>
+                    '''))
+
+        def on_toggle_change(change):
+            """Handle toggle switch change."""
+            if loaded_data['series'] is None:
+                return
+            if change['new'] == 'header':
+                render_header_view()
+            else:
+                render_image_view()
+
+        view_toggle.observe(on_toggle_change, names='value')
+
+        def show_header(series, patient=None, study=None):
+            """Show DICOM header viewer for selected series."""
+            if loaded_data['series'] is None or loaded_data['series'] is not series:
+                clear_content()
+                loaded_data['series'] = series
+                loaded_data['patient'] = patient
+                loaded_data['study'] = study
+                dicom_files = series.files if series.files else []
+                if not dicom_files and series._file_paths:
+                    dicom_files = [p for p in series._file_paths if p]
+                loaded_data['dicom_files'] = dicom_files
+
+            loaded_data['header_loaded'] = True
+            view_toggle.unobserve(on_toggle_change, names='value')
+            view_toggle.value = 'header'
+            view_toggle.observe(on_toggle_change, names='value')
+            render_header_view()
+
+        def show_viewer(series, patient=None, study=None):
+            """Show viewer for selected series (View button)."""
+            if loaded_data['series'] is None or loaded_data['series'] is not series:
+                clear_content()
+                loaded_data['series'] = series
+                loaded_data['patient'] = patient
+                loaded_data['study'] = study
+                dicom_files = series.files if series.files else []
+                if not dicom_files and series._file_paths:
+                    dicom_files = [p for p in series._file_paths if p]
+                loaded_data['dicom_files'] = dicom_files
+
+            view_toggle.unobserve(on_toggle_change, names='value')
+            view_toggle.value = 'image'
+            view_toggle.observe(on_toggle_change, names='value')
+
+            if not loaded_data['image_loaded']:
+                load_images()
+            else:
+                render_image_view()
+
         def render_page():
             """Render current page of series cards."""
+            card_widgets.clear()
+
             f = get_current_filters()
             total = self._db.count_filtered_series(f)
             total_pages = max(1, (total + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
 
-            # Clamp current page
             current_page[0] = min(current_page[0], total_pages - 1)
             current_page[0] = max(0, current_page[0])
 
             offset = current_page[0] * self.PAGE_SIZE
             series_rows = self._db.get_filtered_series(f, limit=self.PAGE_SIZE, offset=offset)
 
-            # Update pagination controls
             page_info.value = f'<span style="font-size:13px;color:#64748b;">Page {current_page[0] + 1} of {total_pages} ({total} series)</span>'
-            prev_btn.disabled = current_page[0] == 0
-            next_btn.disabled = current_page[0] >= total_pages - 1
+            prev_page_btn.disabled = current_page[0] == 0
+            next_page_btn.disabled = current_page[0] >= total_pages - 1
 
             with list_area:
                 clear_output(wait=True)
+
+                display(widgets.HTML('''<style>
+                    .qc-list-area, .qc-list-area * { box-sizing: border-box; }
+                    .qc-list-area img { max-width: 100%; height: auto; }
+                </style>'''))
 
                 if not series_rows:
                     display(widgets.HTML(
@@ -1031,6 +1465,13 @@ class QuickCheckDisplayMixin:
 
         def render_series_card(row):
             """Render a single series card from database row."""
+            context = get_series_context_from_row(row)
+            if not context:
+                return
+
+            series, patient, study = context
+            is_selected = series == selected_series[0]
+
             status = row['qc_status'] or 'PENDING'
             style = STATUS_STYLES.get(status, STATUS_STYLES['PENDING'])
             card_bg = style['bg']
@@ -1042,46 +1483,105 @@ class QuickCheckDisplayMixin:
                 thumbnail_b64 = self._thumb_cache.get_thumbnail_base64(row['thumbnail_path'])
 
             if thumbnail_b64:
-                img = f'<img src="data:image/jpeg;base64,{thumbnail_b64}" style="width:100%;display:block;border-radius:6px;">'
+                img = f'<img src="data:image/jpeg;base64,{thumbnail_b64}" style="width:100%;max-width:100%;display:block;border-radius:6px;">'
             elif row['is_derived']:
-                img = f'<div style="height:60px;background:linear-gradient(135deg,#4c1d95,#7c3aed);color:white;display:flex;align-items:center;justify-content:center;font-size:13px;border-radius:6px;">{row["modality"]}</div>'
+                img = f'<div style="height:60px;width:100%;background:linear-gradient(135deg,#4c1d95,#7c3aed);color:white;display:flex;align-items:center;justify-content:center;font-size:13px;border-radius:6px;font-weight:500;">{escape(row["modality"])}</div>'
             elif row['error_message']:
-                img = f'<div style="height:60px;background:#fee2e2;color:#991b1b;display:flex;align-items:center;justify-content:center;font-size:10px;padding:8px;border-radius:6px;">{row["error_message"][:35]}...</div>'
+                img = f'<div style="height:60px;width:100%;background:#fee2e2;color:#991b1b;display:flex;align-items:center;justify-content:center;font-size:10px;padding:8px;text-align:center;border-radius:6px;box-sizing:border-box;">{escape(row["error_message"][:35])}...</div>'
             else:
-                img = '<div style="height:60px;background:#e5e7eb;color:#6b7280;display:flex;align-items:center;justify-content:center;border-radius:6px;font-size:12px;">No preview</div>'
+                img = '<div style="height:60px;width:100%;background:#e5e7eb;color:#6b7280;display:flex;align-items:center;justify-content:center;border-radius:6px;font-size:12px;">No preview</div>'
 
             badge_bg = border_color
             badge_text = '#fff' if status != 'WARNING' else '#78350f'
 
             # Build label
             series_label = f"#{row['series_number']} {row['modality']}: {row['series_description'] or ''}"
+            session_label = row['xnat_session_label'] or row['study_date'] or (row['study_uid'][:20] if row['study_uid'] else '')
 
-            card_html = f'''
-            <div style="background:{card_bg};border:1px solid {border_color};border-left:4px solid {border_color};
-                        border-radius:8px;padding:12px;margin-bottom:10px;">
-                <div style="position:relative;">
-                    <span style="position:absolute;top:0;right:0;background:{badge_bg};color:{badge_text};
-                                 padding:4px 10px;border-radius:4px;font-size:10px;font-weight:600;">{status}</span>
-                    <div style="margin-bottom:10px;padding-right:75px;">
-                        <div style="display:flex;margin-bottom:3px;">
-                            <span style="color:#64748b;width:55px;font-size:12px;">Subject</span>
-                            <span style="font-size:12px;color:#1e293b;font-weight:500;">{row['patient_id']}</span>
-                        </div>
-                        <div style="display:flex;margin-bottom:3px;">
-                            <span style="color:#64748b;width:55px;font-size:12px;">Session</span>
-                            <span style="font-size:12px;color:#1e293b;font-weight:500;">{row['xnat_session_label'] or row['study_date'] or row['study_uid'][:20]}</span>
-                        </div>
-                        <div style="display:flex;">
-                            <span style="color:#64748b;width:55px;font-size:12px;">Series</span>
-                            <span style="font-size:12px;color:#1e293b;font-weight:500;">{series_label[:50]}</span>
-                        </div>
+            # Issue list
+            issue_html = ''
+            if series.qc_report and series.qc_status in ('FAIL', 'WARNING', 'NOTE'):
+                issues = [r for r in series.qc_report.results if r.status in ('FAIL', 'WARNING', 'NOTE')]
+                if issues:
+                    issue_list = ', '.join(escape(r.check_name) for r in issues)
+                    issue_html = f'<div style="margin-top:8px;padding:6px 10px;font-size:11px;color:{style["text"]};background:rgba(0,0,0,0.04);border-radius:4px;word-wrap:break-word;">{issue_list}</div>'
+
+            card_content = widgets.HTML(f'''
+                <div style="position:relative;width:100%;box-sizing:border-box;">
+                    <span style="position:absolute;top:0;right:0;background:{badge_bg};color:{badge_text};padding:4px 10px;border-radius:4px;font-size:10px;font-weight:600;">{status}</span>
+                    <div style="margin-bottom:10px;padding-right:75px;box-sizing:border-box;">
+                        <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Subject</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{escape(row['patient_id'])}</span></div>
+                        <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Session</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{escape(session_label)}</span></div>
+                        <div style="display:flex;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Series</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{escape(series_label[:50])}</span></div>
                     </div>
                     {img}
+                    {issue_html}
                 </div>
-            </div>
-            '''
+            ''', layout=widgets.Layout(width='98%', min_width='0'))
 
-            card = widgets.HTML(card_html)
+            # Buttons
+            view_btn = widgets.Button(
+                description='● View' if is_selected else 'View',
+                button_style='success' if is_selected else 'info',
+                layout=widgets.Layout(flex='1', height='32px', min_width='0')
+            )
+            tags_btn = widgets.Button(
+                description='Tags',
+                button_style='',
+                layout=widgets.Layout(flex='1', height='32px', min_width='0')
+            )
+
+            def on_view_click(btn, s=series, p=patient, st=study):
+                update_selection(s)
+                hide_placeholder()
+                show_viewer(s, p, st)
+
+            def on_header_click(btn, s=series, p=patient, st=study):
+                update_selection(s)
+                hide_placeholder()
+                show_header(s, p, st)
+
+            view_btn.on_click(on_view_click)
+            tags_btn.on_click(on_header_click)
+
+            button_row = widgets.HBox(
+                [view_btn, tags_btn],
+                layout=widgets.Layout(margin='10px 0 0 0', gap='8px', width='100%')
+            )
+
+            card_id = f'qc-card-{id(series)}'
+            style_tag = widgets.HTML(f'''<style>
+                .{card_id} {{
+                    background: {card_bg} !important;
+                    border-radius: 8px;
+                    box-sizing: border-box !important;
+                    max-width: 100% !important;
+                }}
+                .{card_id} * {{ box-sizing: border-box; }}
+                .{card_id} img {{ max-width: 100%; height: auto; display: block; }}
+                .{card_id} .widget-html-content {{ width: 100%; }}
+            </style>''')
+
+            card = widgets.VBox(
+                [card_content, button_row],
+                layout=widgets.Layout(
+                    border=f'1px solid {border_color}',
+                    border_left=f'4px solid {border_color}',
+                    border_radius='8px',
+                    padding='12px',
+                    margin='0 0 10px 0',
+                    box_shadow=f'0 0 0 3px {border_color}' if is_selected else None,
+                )
+            )
+            card.add_class(card_id)
+
+            card_widgets[id(series)] = {
+                'card': card,
+                'view_btn': view_btn,
+                'border_color': border_color
+            }
+
+            display(style_tag)
             display(card)
 
         def on_filter_change(_=None):
@@ -1105,18 +1605,16 @@ class QuickCheckDisplayMixin:
         series_num_dropdown.observe(on_filter_change, names='value')
         description_filter.observe(on_filter_change, names='value')
 
-        prev_btn.on_click(on_prev_click)
-        next_btn.on_click(on_next_click)
+        prev_page_btn.on_click(on_prev_click)
+        next_page_btn.on_click(on_next_click)
 
         # Initial render
         render_page()
 
         # === Layout ===
         def make_filter(label, widget):
-            return widgets.HBox([
-                widgets.HTML(f'<span style="font-size:12px;color:#64748b;margin-right:4px;">{label}</span>'),
-                widget
-            ], layout=widgets.Layout(align_items='center'))
+            lbl = widgets.HTML(f'<span style="font-size:11px;color:#64748b;margin-right:4px;">{label}</span>')
+            return widgets.HBox([lbl, widget], layout=widgets.Layout(align_items='center'))
 
         filter_box = widgets.HBox([
             make_filter('Status', status_dropdown),
@@ -1127,22 +1625,31 @@ class QuickCheckDisplayMixin:
         ], layout=widgets.Layout(align_items='center', gap='12px', flex_wrap='wrap'))
 
         pagination_box = widgets.HBox([
-            prev_btn,
+            prev_page_btn,
             page_info,
-            next_btn,
+            next_page_btn,
         ], layout=widgets.Layout(justify_content='center', align_items='center', gap='10px', padding='10px 0'))
 
+        summary_row = widgets.HTML(f'''
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 0;">
+                {' '.join(summary_parts)}
+            </div>
+        ''')
+
         header = widgets.VBox([
-            summary_html,
+            summary_row,
             filter_box,
             pagination_box,
-        ], layout=widgets.Layout(margin='0 0 12px 0'))
+        ], layout=widgets.Layout(margin='0 0 12px 0', width='100%'))
 
-        # Two-panel layout
-        left_panel = widgets.VBox([list_area], layout=widgets.Layout(width='400px', flex='0 0 auto'))
-        right_panel = widgets.VBox([placeholder, content_panel], layout=widgets.Layout(flex='1 1 auto', min_width='400px'))
+        # Start with viewer closed (thumbnails full width)
+        left_panel = widgets.VBox([list_area], layout=widgets.Layout(width='100%', flex='1 1 auto'))
+        right_panel = widgets.VBox([placeholder, toggle_container], layout=widgets.Layout(flex='1 1 auto', min_width='400px', display='none'))
 
-        main_layout = widgets.HBox([left_panel, right_panel], layout=widgets.Layout(width='100%', gap='15px'))
+        panel_refs['left'] = left_panel
+        panel_refs['right'] = right_panel
+
+        main_layout = widgets.HBox([left_panel, right_panel], layout=widgets.Layout(width='100%'))
 
         display(widgets.VBox([header, main_layout], layout=widgets.Layout(width='100%')))
 
@@ -1190,10 +1697,10 @@ class QuickCheckDisplayMixin:
         html += '</div>'
 
         for patient_id, patient in sorted(self.patients.items()):
-            html += f'<div class="patient-section"><div class="patient-header">{patient.label}</div>'
+            html += f'<div class="patient-section"><div class="patient-header">{escape(patient.label)}</div>'
 
-            for study_uid, study in sorted(patient.studies.items(), key=lambda x: x[1].date):
-                html += f'<div class="study-header">{study.label}</div><div class="qc-grid">'
+            for study_uid, study in sorted(patient.studies.items(), key=lambda x: x[1].date or ''):
+                html += f'<div class="study-header">{escape(study.label)}</div><div class="qc-grid">'
 
                 for series_uid, series in sorted(study.series.items(), key=lambda item: self._series_num_sort_key(item[1].series_number)):
                     status = series.qc_status.lower()
@@ -1207,8 +1714,8 @@ class QuickCheckDisplayMixin:
                                    '<rect fill="%23333" width="340" height="113"/>'
                                    '<text x="170" y="56" fill="%23999" text-anchor="middle" dy=".3em">No image</text></svg>')
 
-                    html += f'''<div class="qc-thumb {status}" title="{series.description}&#10;{len(series.files)} slices">
-                        <img src="{img_src}"><div class="label"><span class="desc">{series.label}</span>
+                    html += f'''<div class="qc-thumb {status}" title="{escape(series.description or '', quote=True)}&#10;{len(series.files)} slices">
+                        <img src="{img_src}"><div class="label"><span class="desc">{escape(series.label)}</span>
                         <span class="status">{series.qc_status}</span></div></div>'''
 
                 html += '</div>'

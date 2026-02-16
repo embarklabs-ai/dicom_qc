@@ -1,6 +1,7 @@
 """Quickcheck module for efficient batch review of DICOM data."""
 
 import hashlib
+import html
 import os
 import time
 from dataclasses import dataclass, field
@@ -9,6 +10,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import pydicom
+
+
+from dicom_qc.core.dicom_loader import DicomLoader
+from dicom_qc.core.geometry import GeometryQC
+from dicom_qc.visualization.snapshots import SnapshotGenerator
+from dicom_qc.quickcheck_html import QuickCheckHTMLMixin
+from dicom_qc.quickcheck_display import QuickCheckDisplayMixin
 
 
 def _xnat_retry(func: Callable, max_retries: int = 3, base_delay: float = 2.0):
@@ -27,7 +35,6 @@ def _xnat_retry(func: Callable, max_retries: int = 3, base_delay: float = 2.0):
     Raises:
         Last exception if all retries fail
     """
-    last_error = None
     for attempt in range(max_retries + 1):
         try:
             return func()
@@ -39,18 +46,8 @@ def _xnat_retry(func: Callable, max_retries: int = 3, base_delay: float = 2.0):
             if not is_retryable or attempt >= max_retries:
                 raise
 
-            last_error = e
             delay = base_delay * (2 ** attempt)
             time.sleep(delay)
-
-    raise last_error
-
-
-from dicom_qc.core.dicom_loader import DicomLoader
-from dicom_qc.core.geometry import GeometryQC
-from dicom_qc.visualization.snapshots import SnapshotGenerator
-from dicom_qc.quickcheck_html import QuickCheckHTMLMixin
-from dicom_qc.quickcheck_display import QuickCheckDisplayMixin
 
 
 def _fetch_scan_files(scan) -> List:
@@ -223,10 +220,12 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         self.patients: Dict[str, PatientInfo] = {}
         self.loader = DicomLoader()
         self._xnat_mode = False
-        self._save_path: Optional[Path] = None
         self._xnat_session: Any = None  # XNAT session for restoring file access
         self._xnat_project_id: Optional[str] = None  # XNAT project ID for OHIF links
         self._xnat_base_url: Optional[str] = None  # XNAT base URL for OHIF links
+
+        # Flag to skip orphan cleanup during discovery (partial data in memory)
+        self._discovering = False
 
         # Scaled mode: SQLite database + thumbnail disk cache
         self._use_db = use_db
@@ -235,6 +234,33 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         if use_db and data_dir:
             self._init_storage()
+
+        # Register atexit handler to close DB on interpreter shutdown
+        import atexit
+        atexit.register(self.close)
+
+    def close(self):
+        """Close database connection and release resources.
+
+        Safe to call multiple times. Called automatically on garbage collection
+        and interpreter shutdown.
+        """
+        if self._db is not None:
+            try:
+                self._db.close()
+            except Exception:
+                pass
+            self._db = None
+
+    def __del__(self):
+        """Safety net: close DB on garbage collection."""
+        self.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def _init_storage(self):
         """Initialize database and thumbnail cache for scaled operations."""
@@ -249,6 +275,24 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         self._db = QCDatabase(storage_dir / 'qc_database.sqlite3')
         self._thumb_cache = ThumbnailCache(storage_dir / 'thumbnails')
 
+    @staticmethod
+    def _get_effective_uids(series: 'SeriesInfo', study: 'StudyInfo', study_key: str) -> tuple:
+        """Get stable UIDs for database keys.
+
+        XNAT mode: ALWAYS use XNAT identifiers (scan_id/session_label) to avoid
+        duplicates when DICOM UID gets populated later during processing.
+        Local mode: use DICOM UIDs (always available from file headers).
+
+        Returns:
+            (effective_study_uid, effective_series_uid)
+        """
+        if series.xnat_scan_id:
+            # XNAT mode - use stable XNAT identifiers
+            return (study.xnat_session_label or study_key, series.xnat_scan_id)
+        else:
+            # Local mode - use DICOM UIDs
+            return (study.uid or study_key, series.uid or str(series.series_number))
+
     def _sync_series_to_db(self, series: 'SeriesInfo', patient_id: str, study_key: str,
                            patient: 'PatientInfo', study: 'StudyInfo') -> int:
         """Sync a series to the database, return database ID."""
@@ -262,10 +306,12 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             xnat_subject_id=patient.xnat_subject_id,
         )
 
+        effective_study_uid, effective_series_uid = self._get_effective_uids(series, study, study_key)
+
         # Insert/update study
         study_db_id = self._db.insert_study(
             patient_db_id=patient_db_id,
-            study_uid=study.uid,
+            study_uid=effective_study_uid,
             study_date=study.date,
             study_description=study.description,
             xnat_session_label=study.xnat_session_label,
@@ -275,7 +321,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         # Insert/update series
         series_db_id = self._db.insert_series(
             study_db_id=study_db_id,
-            series_uid=series.uid,
+            series_uid=effective_series_uid,
             series_number=series.series_number,
             series_description=series.description,
             modality=series.modality,
@@ -289,7 +335,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             file_count=len(series.files) if series.files else len(series._file_uris),
         )
 
-        # Store series files if available
+        # Store series files
         if series._file_uris or series._file_paths:
             self._db.insert_series_files(
                 series_db_id,
@@ -305,14 +351,37 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         return series_db_id
 
     def _sync_all_to_db(self):
-        """Sync all series to database."""
+        """Sync all series to database and clean up orphan records."""
         if not self._db:
             return
+
+        # Collect all valid series database IDs
+        valid_series_ids = set()
 
         for patient_id, patient in self.patients.items():
             for study_key, study in patient.studies.items():
                 for series_key, series in study.series.items():
-                    self._sync_series_to_db(series, patient_id, study_key, patient, study)
+                    db_id = self._sync_series_to_db(series, patient_id, study_key, patient, study)
+                    if db_id:
+                        valid_series_ids.add(db_id)
+
+        # Delete orphan records (series no longer in memory)
+        # Skip during discovery — only a partial set of series is in memory
+        if self._discovering:
+            self._db.commit()
+            return
+        deleted, orphan_thumb_paths = self._db.delete_orphan_series(valid_series_ids)
+        if deleted:
+            print(f"Cleaned up {deleted} orphan series from database")
+            # Clean up orphan thumbnail files from disk
+            if self._thumb_cache and orphan_thumb_paths:
+                for rel_path in orphan_thumb_paths:
+                    full_path = self._thumb_cache.cache_dir / rel_path
+                    if full_path.exists():
+                        try:
+                            full_path.unlink()
+                        except OSError:
+                            pass
 
         self._db.commit()
 
@@ -325,9 +394,26 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         for series in self.get_all_series():
             if series.thumbnail and not series._thumbnail_path:
                 # Migrate base64 to disk
-                rel_path = self._thumb_cache.save_thumbnail_from_base64(
-                    series.uid, series.thumbnail
-                )
+                # Use XNAT identifiers when available (series.uid may be empty in XNAT mode)
+                if series.xnat_scan_id and series._xnat_subject_label and series._xnat_session_label:
+                    thumb_path = self._thumb_cache.get_path_for_xnat(
+                        series._xnat_subject_label, series._xnat_session_label, series.xnat_scan_id
+                    )
+                    thumb_path.parent.mkdir(parents=True, exist_ok=True)
+                    # Decode and save
+                    import base64
+                    try:
+                        raw_data = base64.b64decode(series.thumbnail)
+                        thumb_path.write_bytes(raw_data)
+                        rel_path = self._thumb_cache.get_relative_path_xnat(
+                            series._xnat_subject_label, series._xnat_session_label, series.xnat_scan_id
+                        )
+                    except Exception:
+                        rel_path = None
+                else:
+                    rel_path = self._thumb_cache.save_thumbnail_from_base64(
+                        series.uid, series.thumbnail
+                    )
                 if rel_path:
                     series._thumbnail_path = rel_path
                     series.thumbnail = None  # Free memory
@@ -338,145 +424,184 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         return migrated
 
-    def save(self, path: Optional[Path] = None) -> Path:
-        """Save discovery and processing state to a file.
+    def _load_from_db(self):
+        """Reconstruct self.patients hierarchy from the database."""
+        from dicom_qc.core.geometry import QCResult, QCReport
+        from datetime import datetime
 
-        Preserves file URIs so files can be restored after load without
-        re-iterating through XNAT. Call connect_xnat(session) after loading
-        to enable file access.
+        rows = self._db.load_all()
+        all_qc_results = self._db.load_all_qc_results()
+        all_files = self._db.load_all_series_files()
 
-        Args:
-            path: Path to save file. If None, uses last save path or generates one.
+        # Restore session metadata
+        xnat_mode_val = self._db.get_session_value('xnat_mode')
+        if xnat_mode_val is not None:
+            self._xnat_mode = xnat_mode_val == '1'
+        data_dir_val = self._db.get_session_value('data_dir')
+        if data_dir_val and not self.data_dir:
+            self.data_dir = Path(data_dir_val)
+        xnat_project_id = self._db.get_session_value('xnat_project_id')
+        if xnat_project_id:
+            self._xnat_project_id = xnat_project_id
+        xnat_base_url = self._db.get_session_value('xnat_base_url')
+        if xnat_base_url:
+            self._xnat_base_url = xnat_base_url
 
-        Returns:
-            Path where data was saved
+        self.patients = {}
+
+        for row in rows:
+            patient_id = row['patient_id']
+            study_uid = row['study_uid']
+            series_db_id = row['series_db_id']
+
+            # Ensure patient exists
+            if patient_id not in self.patients:
+                self.patients[patient_id] = PatientInfo(
+                    patient_id=patient_id,
+                    patient_name=row['patient_name'] or '',
+                    xnat_subject_id=row['xnat_subject_id'],
+                )
+            patient = self.patients[patient_id]
+
+            # Ensure study exists
+            if study_uid not in patient.studies:
+                patient.studies[study_uid] = StudyInfo(
+                    uid=study_uid,
+                    date=row['study_date'] or '',
+                    description=row['study_description'] or '',
+                    xnat_session_label=row['xnat_session_label'],
+                    xnat_experiment_id=row['xnat_experiment_id'],
+                )
+            study = patient.studies[study_uid]
+
+            # Reconstruct QCReport if we have results
+            qc_report = None
+            db_results = all_qc_results.get(series_db_id, [])
+            if db_results:
+                qc_results = []
+                orientation_labels = {}
+                primary_plane = ''
+                overall_status = row['qc_status'] or 'PASS'
+
+                for r in db_results:
+                    qc_results.append(QCResult(
+                        status=r['status'],
+                        check_name=r['check_name'],
+                        message=r['message'] or '',
+                        details=r['details'] or {},
+                    ))
+                    # Extract orientation info from the Orientation Labels check
+                    if r['check_name'] == 'Orientation Labels' and r['details']:
+                        orientation_labels = r['details'].get('orientation_labels', {})
+                        primary_plane = r['details'].get('primary_plane', '')
+
+                qc_report = QCReport(
+                    scan_id=row['series_uid'],
+                    results=qc_results,
+                    overall_status=overall_status,
+                    orientation_labels=orientation_labels,
+                    primary_plane=primary_plane,
+                )
+
+            # Reconstruct file paths
+            file_uris = []
+            file_paths = []
+            for uri, path in all_files.get(series_db_id, []):
+                file_uris.append(uri or '')
+                file_paths.append(path or '')
+
+            # Determine series key
+            series_key = row['xnat_scan_id'] or row['series_uid']
+
+            is_xnat = bool(row['xnat_scan_id'])
+
+            series = SeriesInfo(
+                uid=row['series_uid'],
+                series_number=row['series_number'],
+                description=row['series_description'] or '',
+                modality=row['modality'] or '',
+                qc_report=qc_report,
+                _thumbnail_path=row['thumbnail_path'],
+                error=row['error_message'],
+                transfer_syntax=row['transfer_syntax'],
+                is_derived=bool(row['is_derived']),
+                derived_info=row['derived_info'],
+                _xnat_files=is_xnat,
+                xnat_scan_id=row['xnat_scan_id'],
+                _file_uris=file_uris,
+                _file_paths=file_paths,
+                _db_id=series_db_id,
+                _xnat_subject_label=patient_id if is_xnat else None,
+                _xnat_session_label=row['xnat_session_label'] if is_xnat else None,
+            )
+
+            study.series[series_key] = series
+
+    def save(self) -> None:
+        """Save state to the SQLite database.
+
+        Syncs all in-memory series data to the database. Migrates any
+        base64 thumbnails to disk cache first.
+
+        For XNAT series, stores file URIs/paths and clears non-serializable
+        objects (scan objects, file handles). Workers hold their own local
+        references, so this is safe during parallel processing.
         """
-        import pickle
+        if not self._db:
+            if not self.data_dir:
+                return
+            self._init_storage()
 
-        if path:
-            self._save_path = Path(path)
-        elif not self._save_path:
-            # Default: save in _dicom_qc/ storage directory
-            if self.data_dir:
-                storage_dir = self.data_dir / '_dicom_qc'
-                storage_dir.mkdir(parents=True, exist_ok=True)
-                self._save_path = storage_dir / 'qc_state.pkl'
-            else:
-                self._save_path = Path('qc_state.pkl')
-
-        # Ensure file URIs and paths are stored before clearing non-picklable objects
-        missing_uris_count = 0
+        # Ensure file URIs and paths are stored; clear non-serializable objects
         for series in self.get_all_series():
             series.volume = None
             if series._xnat_files:
-                # Store URIs and local paths if we have files but none stored yet
                 if series.files and not series._file_uris:
                     try:
                         series._file_uris = [f.uri for f in series.files]
                         series._file_paths = [getattr(f, 'data_path', None) or '' for f in series.files]
                     except Exception:
-                        pass  # Some file objects may not have uri
-                # Track series missing file URIs (file listing failed during discovery)
-                if not series._file_uris:
-                    missing_uris_count += 1
-                # Only clear files for COMPLETED series (has thumbnail, qc_report, error, or is_derived)
-                # This allows parallel processing to continue using files for pending series
-                is_complete = series.thumbnail or series._thumbnail_path or series.qc_report or series.error or series.is_derived
-                if is_complete:
-                    series.files = []
-                    series._scan_obj = None
+                        pass
+                series._scan_obj = None
+                series.files = []
+            else:
+                if series.files and not series._file_paths:
+                    series._file_paths = [str(f) for f in series.files]
 
         # Migrate thumbnails to disk cache if available (frees memory)
         if self._thumb_cache:
             self._migrate_thumbnails_to_disk()
 
-        # Sync to database if available
-        if self._db:
-            self._sync_all_to_db()
+        # Sync to database
+        self._sync_all_to_db()
 
-        # Prepare data for saving (pickle for backward compatibility)
-        save_data = {
-            'patients': self.patients,
-            '_xnat_mode': self._xnat_mode,
-            'data_dir': str(self.data_dir) if self.data_dir else None,
-            '_xnat_project_id': self._xnat_project_id,
-            '_xnat_base_url': self._xnat_base_url,
-            '_use_db': self._use_db,  # Track if scaled mode was used
-        }
+        # Store session metadata for load()
+        self._db.set_session_value('xnat_mode', '1' if self._xnat_mode else '0')
+        self._db.set_session_value('data_dir', str(self.data_dir) if self.data_dir else '')
+        if self._xnat_project_id:
+            self._db.set_session_value('xnat_project_id', self._xnat_project_id)
+        if self._xnat_base_url:
+            self._db.set_session_value('xnat_base_url', self._xnat_base_url)
+        self._db.commit()
 
-        # Atomic save: write to temp file, then rename (prevents corruption on interrupt)
-        import tempfile
-        temp_fd, temp_path = tempfile.mkstemp(
-            dir=self._save_path.parent,
-            prefix='.qc_state_',
-            suffix='.tmp'
-        )
-        try:
-            with os.fdopen(temp_fd, 'wb') as f:
-                pickle.dump(save_data, f)
-            # Atomic rename (on POSIX systems)
-            os.replace(temp_path, self._save_path)
-        except Exception:
-            # Clean up temp file on error
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
-            raise
+    def load(self) -> 'QuickCheck':
+        """Load state from the SQLite database.
 
-        return self._save_path
-
-    def load(self, path: Path = None, use_db: bool = None) -> 'QuickCheck':
-        """Load discovery and processing state from a file.
-
-        Args:
-            path: Path to saved state file. If None, uses default location
-                  ({data_dir}/_dicom_qc/qc_state.pkl)
-            use_db: If True, initialize database for scaled operations.
-                   If None, auto-detect from save file.
+        Reconstructs the full patient/study/series hierarchy from the database,
+        including QC results, file paths, and thumbnail references.
 
         Returns:
             self for chaining
         """
-        import pickle
-
-        if path is None:
-            if self.data_dir:
-                path = self.data_dir / '_dicom_qc' / 'qc_state.pkl'
-            else:
-                path = Path('qc_state.pkl')
-        else:
-            path = Path(path)
-
-        if not path.exists():
-            raise FileNotFoundError(f"Save file not found: {path}")
-
-        with open(path, 'rb') as f:
-            save_data = pickle.load(f)
-
-        self.patients = save_data['patients']
-        self._xnat_mode = save_data['_xnat_mode']
-        if save_data.get('data_dir'):
-            self.data_dir = Path(save_data['data_dir'])
-        self._xnat_project_id = save_data.get('_xnat_project_id')
-        self._xnat_base_url = save_data.get('_xnat_base_url')
-        self._save_path = path
-
-        # Determine if we should use scaled mode
-        if use_db is None:
-            # Auto-detect: use DB if save file used it, or if we have many series
-            use_db = save_data.get('_use_db', False)
-            all_series = self.get_all_series()
-            if not use_db and len(all_series) > 500:
-                use_db = True  # Auto-enable for large datasets
-
-        self._use_db = use_db
-        if use_db and self.data_dir:
+        if not self._db:
+            if not self.data_dir:
+                raise FileNotFoundError("No data_dir set and no database available")
+            db_path = self.data_dir / '_dicom_qc' / 'qc_database.sqlite3'
+            if not db_path.exists():
+                raise FileNotFoundError(f"No database found at {db_path}")
             self._init_storage()
-            # Migrate base64 thumbnails to disk if present
-            self._migrate_thumbnails_to_disk()
-            # Sync to database
-            self._sync_all_to_db()
+
+        self._load_from_db()
 
         # Count what was loaded
         all_series = self.get_all_series()
@@ -486,7 +611,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         errors = sum(1 for s in all_series if s.error)
         pending = total_series - with_thumbnail - derived - errors
 
-        print(f"Loaded state from {path}")
+        print(f"Loaded state from database")
         status_parts = [f"{len(self.patients)} subjects", f"{total_series} series"]
         if pending > 0:
             status_parts.append(f"{pending} pending")
@@ -499,18 +624,30 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         return self
 
     def has_save(self) -> bool:
-        """Check if a save file exists at the default location."""
-        if self.data_dir:
-            path = self.data_dir / '_dicom_qc' / 'qc_state.pkl'
-        else:
-            path = Path('qc_state.pkl')
-        return path.exists()
+        """Check if a database with data exists at the default location."""
+        if not self.data_dir:
+            return False
+        db_path = self.data_dir / '_dicom_qc' / 'qc_database.sqlite3'
+        if not db_path.exists():
+            return False
+        # Check if it actually has data (not just an empty schema)
+        if self._db:
+            return not self._db.is_empty()
+        # Open temporarily to check
+        from dicom_qc.storage import QCDatabase
+        try:
+            db = QCDatabase(db_path)
+            has_data = not db.is_empty()
+            db.close()
+            return has_data
+        except Exception:
+            return False
 
     def load_if_exists(self) -> bool:
-        """Load from default save location if it exists.
+        """Load from database if it exists and has data.
 
         Returns:
-            True if loaded, False if no save file found
+            True if loaded, False if no saved state found
         """
         if self.has_save():
             self.load()
@@ -518,17 +655,17 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         return False
 
     @classmethod
-    def from_save(cls, path: Path) -> 'QuickCheck':
-        """Create a QuickCheck instance from a saved state file.
+    def from_save(cls, data_dir: Path) -> 'QuickCheck':
+        """Create a QuickCheck instance from a saved database.
 
         Args:
-            path: Path to saved state file
+            data_dir: Directory containing _dicom_qc/ storage
 
         Returns:
             QuickCheck instance with loaded state
         """
-        qc = cls()
-        qc.load(path)
+        qc = cls(data_dir=data_dir)
+        qc.load()
         return qc
 
     def reset(self, delete_storage: bool = True) -> 'QuickCheck':
@@ -538,10 +675,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         - All in-memory patient/study/series data
         - SQLite database (if delete_storage=True)
         - Thumbnail cache (if delete_storage=True)
-        - Pickle save file (if delete_storage=True)
 
         Args:
-            delete_storage: If True, delete database, thumbnails, and save file.
+            delete_storage: If True, delete database and thumbnails.
                           If False, only clear in-memory state.
 
         Returns:
@@ -557,15 +693,32 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         # Clear in-memory state
         self.patients = {}
 
+        # Close database connection BEFORE deleting storage directory
+        if self._db is not None:
+            try:
+                self._db.close()
+            except Exception:
+                pass
+            self._db = None
+        self._thumb_cache = None
+
         if delete_storage and self.data_dir:
             storage_dir = Path(self.data_dir) / '_dicom_qc'
             if storage_dir.exists():
-                # Use ignore_errors for NFS filesystems with lock files
                 shutil.rmtree(storage_dir, ignore_errors=True)
-                # If directory still exists (NFS locks), at least clear the contents we can
+                # If directory still exists (stale NFS .nfs lock files from a
+                # previous interrupted process), rename it out of the way so
+                # we can create a fresh _dicom_qc directory.
                 if storage_dir.exists():
-                    for item in storage_dir.iterdir():
-                        if not item.name.startswith('.nfs'):
+                    import uuid
+                    stale_name = f'_dicom_qc_stale_{uuid.uuid4().hex[:8]}'
+                    stale_dir = storage_dir.parent / stale_name
+                    try:
+                        storage_dir.rename(stale_dir)
+                        print(f"Renamed stale storage to {stale_name} (NFS lock files present, safe to delete later)")
+                    except OSError:
+                        # Can't even rename — clear what we can
+                        for item in storage_dir.iterdir():
                             try:
                                 if item.is_dir():
                                     shutil.rmtree(item, ignore_errors=True)
@@ -573,17 +726,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                                     item.unlink()
                             except OSError:
                                 pass
-                    print(f"Cleared storage: {storage_dir} (some NFS lock files may remain)")
+                        print(f"Cleared storage: {storage_dir} (some NFS lock files may remain)")
                 else:
                     print(f"Deleted storage: {storage_dir}")
-
-        if delete_storage and self._save_path and Path(self._save_path).exists():
-            Path(self._save_path).unlink()
-            print(f"Deleted save file: {self._save_path}")
-
-        # Reset storage references
-        self._db = None
-        self._thumb_cache = None
 
         # Re-initialize storage if using scaled mode
         if self._use_db and self.data_dir:
@@ -606,9 +751,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             self for chaining
 
         Example:
-            qc = QuickCheck.from_save('state.pkl')
+            qc = QuickCheck.from_save(data_dir)
             qc.connect_xnat(xnat.connect())
-            qc.process_all_interactive()  # Files accessed via stored paths
+            qc.process_all()  # Files accessed via stored paths
         """
         self._xnat_session = session
 
@@ -652,6 +797,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                     existing_series[series.uid] = series
 
         self.patients = {}
+        self._discovering = True
 
         # Use os.walk to follow symlinks (rglob does not follow symlinks by default)
         dcm_files = []
@@ -682,6 +828,8 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                     restored += 1
             if restored > 0:
                 print(f"Restored {restored} previously processed series")
+
+        self._discovering = False
 
         # Auto-save after discovery
         if self.data_dir:
@@ -767,8 +915,8 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             all_files = _xnat_retry(lambda: _fetch_scan_files(scan))
             series._file_uris = [f.uri for f in all_files]
             series._file_paths = [getattr(f, 'data_path', None) or '' for f in all_files]
-        except Exception:
-            series._scan_obj = scan
+        except Exception as e:
+            series.error = f"Failed to fetch file list: {e}"
 
         return series
 
@@ -843,6 +991,11 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                     # Skip existing scans in incremental mode
                     if not refresh and scan_id in study.series:
                         existing = study.series[scan_id]
+                        if existing.error:
+                            # Retry errored series as new scan tasks
+                            existing.error = None
+                            scan_tasks.append((subject_label, session_label, scan, study))
+                            continue
                         if existing._file_uris:
                             skipped_scans += 1
                             continue
@@ -855,7 +1008,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         return scan_tasks, total_sessions, total_scans, skipped_scans
 
-    def discover_xnat(self, project: Any, interactive: bool = True, refresh: bool = True,
+    def discover_xnat(self, project: Any, interactive: bool = True, refresh: bool = None,
                       read_dicom: bool = False, parallel: bool = None,
                       max_workers: int = 8) -> Dict[str, PatientInfo]:
         """Discover DICOM series from an XNAT project.
@@ -867,6 +1020,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             interactive: If True, show progress in Jupyter
             refresh: If True, clear existing data and re-discover everything.
                      If False, only add new subjects/sessions/scans (incremental).
+                     If None (default), auto-detect: refresh only if no data loaded.
             read_dicom: If True, read first DICOM file to get accurate metadata.
                        If False (default), use only XNAT metadata (much faster).
             parallel: If True, use parallel discovery for faster throughput.
@@ -876,9 +1030,16 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         Returns:
             Dict of PatientInfo keyed by subject label
         """
+        # Auto-detect refresh mode: skip full re-discovery if data already loaded
+        if refresh is None:
+            refresh = len(self.patients) == 0
+            if not refresh:
+                total = len(self.get_all_series())
+                print(f"Found {len(self.patients)} subjects, {total} series in saved state — running incremental update")
         if refresh:
             self.patients = {}
         self._xnat_mode = True
+        self._discovering = True
 
         # Store project info for OHIF links
         try:
@@ -896,13 +1057,49 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         except Exception:
             pass
 
-        subjects = list(project.subjects.values())
-        total_subjects = len(subjects)
-
-        # Set up progress display
+        # Set up progress display early so user sees feedback immediately
         progress_widget = None
         status_widget = None
+        error_widget = None
+        discovery_errors = []
+        initial_error_count = len(self.get_errors()) if not refresh else 0
         mode_str = "Discovering" if refresh else "Updating"
+
+        def _render_discovery_errors() -> str:
+            total_err = len(self.get_errors())
+            new_err = len(discovery_errors)
+            summary = (
+                "<div class='qc-card' style='font-size:11px;color:#4f5f78;'>"
+                f"<b>Total ERROR:</b> {total_err}"
+                f"<span style='margin-left:10px;'><b>Pre-existing:</b> {initial_error_count}</span>"
+                f"<span style='margin-left:10px;'><b>New in discovery:</b> {new_err}</span>"
+            )
+            if not discovery_errors:
+                return summary + (
+                    "<div style='margin-top:6px;color:#6a7890;'>Tracking discovery errors for this run...</div>"
+                    "</div>"
+                )
+
+            rows = []
+            for label, detail in discovery_errors[-6:]:
+                rows.append(
+                    "<div style='margin-top:6px;font-size:11px;color:#42526b;'>"
+                    "<span style='display:inline-block;min-width:56px;text-align:center;padding:1px 6px;border-radius:999px;"
+                    "background:#6c757d;color:#fff;font-weight:700;'>ERROR</span> "
+                    f"<span style='font-weight:600;'>{html.escape(label[:52])}</span> "
+                    f"<span style='color:#6a7890;'>- {html.escape(detail[:120])}</span>"
+                    "</div>"
+                )
+            return summary + (
+                f"<div style='margin-top:4px;max-height:140px;overflow-y:auto;padding-right:2px;'>{''.join(rows)}</div>"
+                "</div>"
+            )
+
+        def _record_discovery_error(subject_label: str, session_label: str, scan_id: str, message: str) -> None:
+            label = f"{subject_label} / {session_label} / scan {scan_id}"
+            discovery_errors.append((label, message or "Unknown error"))
+            if error_widget is not None:
+                error_widget.value = _render_discovery_errors()
 
         if interactive:
             try:
@@ -914,49 +1111,88 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                     description=f'{mode_str}:',
                     bar_style='info',
                     style={'bar_color': '#17a2b8', 'description_width': '80px'},
-                    layout=widgets.Layout(width='100%')
+                    layout=widgets.Layout(width='95%')
                 )
                 status_widget = widgets.HTML(
-                    f'<div style="font-family:monospace;">0/{total_subjects} subjects</div>'
+                    '<div class="qc-card qc-mono">Fetching subject list from XNAT...</div>'
                 )
-                display(widgets.VBox([progress_widget, status_widget]))
+                error_widget = widgets.HTML('<div class="qc-card" style="font-size:11px;color:#6a7890;">Tracking discovery errors for this run...</div>')
+                theme_widget = widgets.HTML("""
+                    <style>
+                        .qc-card {
+                            background: linear-gradient(180deg, #fbfdff 0%, #f5f8fc 100%);
+                            border: 1px solid #dce5f0;
+                            border-radius: 8px;
+                            padding: 8px 10px;
+                            box-shadow: 0 1px 0 rgba(19, 35, 66, 0.03);
+                        }
+                        .qc-mono {
+                            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+                        }
+                        .qc-section-title {
+                            margin: 10px 0 6px;
+                            font-size: 12px;
+                            font-weight: 700;
+                            letter-spacing: 0.02em;
+                            color: #2f3a4a;
+                        }
+                    </style>
+                """)
+                display(widgets.VBox([
+                    theme_widget,
+                    progress_widget,
+                    status_widget,
+                    widgets.HTML('<div class="qc-section-title">Error Review</div>'),
+                    error_widget,
+                ], layout=widgets.Layout(width='95%')))
             except Exception:
                 interactive = False
+
+        subjects = list(project.subjects.values())
+        total_subjects = len(subjects)
 
         # Auto-enable parallelism for larger projects
         if parallel is None:
             parallel = total_subjects > 2
 
-        # Phase 1: Collect all scan tasks (fast, sequential)
-        if progress_widget:
-            status_widget.value = (
-                f'<div style="font-family:monospace;">'
-                f'Collecting scan list from {total_subjects} subjects...</div>'
-            )
+        # Phase 1: Collect all scan tasks (sequential, but with per-subject progress)
+        subject_index = {s.label: i + 1 for i, s in enumerate(subjects)}
+        subjects_seen = [0]
+        def _phase1_progress(subject_label, session_label, scan_id):
+            if progress_widget:
+                subjects_seen[0] = max(subjects_seen[0], subject_index.get(subject_label, subjects_seen[0]))
+                progress_widget.value = (subjects_seen[0] / total_subjects) * 50
+                status_widget.value = (
+                    f'<div class="qc-card qc-mono">'
+                    f'Collecting scan list... {subjects_seen[0]}/{total_subjects} subjects<br>'
+                    f'<span style="color:#888">{subject_label} / {session_label} / scan {scan_id}</span></div>'
+                )
 
         scan_tasks, total_sessions, total_scans, skipped_scans = self._collect_xnat_scan_tasks(
-            subjects, refresh
+            subjects, refresh, progress_callback=_phase1_progress
         )
         total_scan_tasks = len(scan_tasks)
         new_scans = 0
 
         if progress_widget:
-            progress_widget.value = 0
+            progress_widget.value = 50
             status_widget.value = (
-                f'<div style="font-family:monospace;">'
-                f'0/{total_scan_tasks} scans | {total_sessions} sessions | {total_subjects} subjects</div>'
+                f'<div class="qc-card qc-mono">'
+                f'Processing 0/{total_scan_tasks} scans | {total_sessions} sessions | {total_subjects} subjects</div>'
             )
+            if error_widget:
+                error_widget.value = _render_discovery_errors()
 
         # Phase 2: Process scans (parallel or sequential)
         if parallel and max_workers > 1 and total_scan_tasks > 0:
             new_scans = self._process_xnat_scans_parallel(
                 scan_tasks, total_scan_tasks, total_sessions, total_subjects,
-                max_workers, progress_widget, status_widget
+                max_workers, progress_widget, status_widget, error_callback=_record_discovery_error
             )
         elif total_scan_tasks > 0:
             new_scans = self._process_xnat_scans_sequential(
                 scan_tasks, total_scan_tasks, total_sessions, total_subjects,
-                progress_widget, status_widget
+                progress_widget, status_widget, error_callback=_record_discovery_error
             )
 
         # Final progress update
@@ -965,16 +1201,18 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             progress_widget.bar_style = 'success'
             if refresh:
                 status_widget.value = (
-                    f'<div style="font-family:monospace;">'
+                    f'<div class="qc-card qc-mono">'
                     f'<b>✓ Discovery complete:</b> {total_subjects} subjects | '
                     f'{total_sessions} sessions | {total_scans} scans</div>'
                 )
             else:
                 status_widget.value = (
-                    f'<div style="font-family:monospace;">'
+                    f'<div class="qc-card qc-mono">'
                     f'<b>✓ Update complete:</b> {new_scans} new scans | '
                     f'{skipped_scans} existing (skipped)</div>'
                 )
+            if error_widget:
+                error_widget.value = _render_discovery_errors()
         else:
             print(f"Discovered {total_subjects} subjects, {total_sessions} sessions, {total_scans} scans")
 
@@ -983,13 +1221,17 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             if series._xnat_files and not series._file_uris and not series.error:
                 series.error = "No file paths available (scan may have been removed from XNAT)"
 
-        # Auto-save after discovery
+        # Discovery complete — allow orphan cleanup on next save
+        self._discovering = False
+
+        # Auto-save after discovery (this save will run orphan cleanup)
         if self.data_dir:
             self.save()
 
     def _process_xnat_scans_sequential(self, scan_tasks: List, total_tasks: int,
                                         total_sessions: int, total_subjects: int,
-                                        progress_widget, status_widget) -> int:
+                                        progress_widget, status_widget,
+                                        error_callback: Optional[Callable[[str, str, str, str], None]] = None) -> int:
         """Process XNAT scans sequentially.
 
         Args:
@@ -999,6 +1241,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             total_subjects: Total subjects discovered (for display)
             progress_widget: Jupyter progress widget or None
             status_widget: Jupyter status HTML widget or None
+            error_callback: Optional callback(subject_label, session_label, scan_id, error_message)
 
         Returns:
             Number of new scans processed
@@ -1010,11 +1253,11 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
             # Update progress
             if progress_widget:
-                progress_pct = ((i + 1) / total_tasks) * 100
+                progress_pct = 50 + ((i + 1) / total_tasks) * 50
                 progress_widget.value = progress_pct
                 status_widget.value = (
-                    f'<div style="font-family:monospace;">'
-                    f'{i + 1}/{total_tasks} scans | {total_sessions} sessions | {total_subjects} subjects<br>'
+                    f'<div class="qc-card qc-mono">'
+                    f'Processing {i + 1}/{total_tasks} scans | {total_sessions} sessions | {total_subjects} subjects<br>'
                     f'<span style="color:#888">{subject_label} / {session_label} / scan {scan_id}</span></div>'
                 )
 
@@ -1022,13 +1265,15 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             series = self._create_series_from_xnat_scan(scan, subject_label, session_label)
             study.series[scan_id] = series
             new_scans += 1
+            if series.error and error_callback:
+                error_callback(subject_label, session_label, scan_id, series.error)
 
             # Periodic save (every 10 scans)
-            if self._save_path and new_scans % 10 == 0:
+            if self.data_dir and new_scans % 10 == 0:
                 self.save()
 
         # Final save
-        if self._save_path and new_scans > 0:
+        if self.data_dir and new_scans > 0:
             self.save()
 
         return new_scans
@@ -1036,7 +1281,8 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
     def _process_xnat_scans_parallel(self, scan_tasks: List, total_tasks: int,
                                       total_sessions: int, total_subjects: int,
                                       max_workers: int, progress_widget,
-                                      status_widget) -> int:
+                                      status_widget,
+                                      error_callback: Optional[Callable[[str, str, str, str], None]] = None) -> int:
         """Process XNAT scans in parallel using ThreadPoolExecutor.
 
         Args:
@@ -1047,16 +1293,15 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             max_workers: Number of parallel workers
             progress_widget: Jupyter progress widget or None
             status_widget: Jupyter status HTML widget or None
+            error_callback: Optional callback(subject_label, session_label, scan_id, error_message)
 
         Returns:
             Number of new scans processed
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        import threading
-        import asyncio
+        from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
-        lock = threading.Lock()
         new_scans = 0
+        failed_scans = 0
         processed_count = [0]
 
         def process_one(task):
@@ -1068,82 +1313,74 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         def update_progress(subj_label, sess_label, scan_id):
             """Update progress widgets."""
             if progress_widget:
-                progress_pct = (processed_count[0] / total_tasks) * 100
+                progress_pct = 50 + (processed_count[0] / total_tasks) * 50
                 progress_widget.value = progress_pct
                 status_widget.value = (
-                    f'<div style="font-family:monospace;">'
-                    f'{processed_count[0]}/{total_tasks} scans | {total_sessions} sessions | '
+                    f'<div class="qc-card qc-mono">'
+                    f'Processing {processed_count[0]}/{total_tasks} scans | {total_sessions} sessions | '
                     f'{total_subjects} subjects<br>'
                     f'<span style="color:#888">{subj_label} / {sess_label} / scan {scan_id}</span></div>'
                 )
 
-        # Try asyncio for responsive updates, fall back to synchronous
-        async def run_parallel():
-            nonlocal new_scans
-            loop = asyncio.get_running_loop()
+        # Save interval scales with dataset size
+        save_interval = 50 if total_tasks > 1000 else 10
+        last_save_i = 0
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                pending_futures = {
-                    loop.run_in_executor(executor, process_one, task): task
-                    for task in scan_tasks
-                }
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_one, task): task for task in scan_tasks}
+            pending = set(futures.keys())
 
-                while pending_futures:
-                    done, _ = await asyncio.wait(
-                        pending_futures.keys(),
-                        timeout=0.3,
-                        return_when=asyncio.FIRST_COMPLETED
-                    )
+            while pending:
+                done, pending = wait(pending, timeout=0.3, return_when=FIRST_COMPLETED)
 
-                    for future in done:
-                        pending_futures.pop(future)
-                        try:
-                            subj_label, sess_label, scan_id, series, study = await future
-                            with lock:
-                                study.series[scan_id] = series
-                                new_scans += 1
-                                processed_count[0] += 1
-                                update_progress(subj_label, sess_label, scan_id)
-                        except Exception:
-                            with lock:
-                                processed_count[0] += 1
-
-                    await asyncio.sleep(0.01)
-
-        def run_fallback():
-            nonlocal new_scans
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(process_one, task): task for task in scan_tasks}
-
-                for future in as_completed(futures):
+                for future in done:
+                    task = futures[future]
+                    subj_label, sess_label, scan, study = task
+                    scan_id = scan.id
                     try:
                         subj_label, sess_label, scan_id, series, study = future.result()
-                        with lock:
-                            study.series[scan_id] = series
-                            new_scans += 1
-                            processed_count[0] += 1
-                            update_progress(subj_label, sess_label, scan_id)
-                    except Exception:
-                        with lock:
-                            processed_count[0] += 1
+                        study.series[scan_id] = series
+                        new_scans += 1
+                        processed_count[0] += 1
+                        update_progress(subj_label, sess_label, scan_id)
+                        if series.error and error_callback:
+                            error_callback(subj_label, sess_label, scan_id, series.error)
+                    except Exception as e:
+                        # Preserve failed scans with an explicit error entry so
+                        # discovery is complete and failures are visible/retryable.
+                        failed_series = SeriesInfo(
+                            uid='',
+                            series_number=scan_id,
+                            description=getattr(scan, 'series_description', '') or '',
+                            modality=getattr(scan, 'modality', '??') or '??',
+                            xnat_scan_id=scan_id,
+                            _xnat_files=True,
+                            _xnat_subject_label=subj_label,
+                            _xnat_session_label=sess_label,
+                            error=f"Failed to process scan: {e}",
+                        )
+                        study.series[scan_id] = failed_series
+                        failed_scans += 1
+                        processed_count[0] += 1
+                        update_progress(subj_label, sess_label, scan_id)
+                        if error_callback:
+                            error_callback(subj_label, sess_label, scan_id, failed_series.error)
 
-        # Run with asyncio if available
-        try:
-            try:
-                loop = asyncio.get_running_loop()
-                import nest_asyncio
-                nest_asyncio.apply()
-                loop.run_until_complete(run_parallel())
-            except RuntimeError:
-                asyncio.run(run_parallel())
-        except ImportError:
-            run_fallback()
-        except Exception:
-            run_fallback()
+                # Periodic save
+                i = processed_count[0]
+                if self.data_dir and i >= last_save_i + save_interval:
+                    try:
+                        self.save()
+                    except Exception as e:
+                        print(f"\nWarning: save failed ({e}), continuing...")
+                    last_save_i = i
 
-        # Save at end
-        if self._save_path and new_scans > 0:
+        # Final save
+        if self.data_dir and new_scans > 0:
             self.save()
+
+        if failed_scans > 0:
+            print(f"Warning: {failed_scans} scan(s) failed during parallel discovery")
 
         return new_scans
 
@@ -1330,11 +1567,11 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             self.reprocess_series(series, silent=True)
             print(f"-> {series.qc_status}")
 
-            if save_interval > 0 and (i + 1) % save_interval == 0 and self._save_path:
+            if save_interval > 0 and (i + 1) % save_interval == 0 and self.data_dir:
                 self.save()
 
         # Final save
-        if self._save_path:
+        if self.data_dir:
             self.save()
 
         print(f"\nDone! Reprocessed {len(series_4d)} series.")
@@ -1370,11 +1607,11 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             self.reprocess_series(series, silent=True)
             print(f"-> {series.qc_status}")
 
-            if save_interval > 0 and (i + 1) % save_interval == 0 and self._save_path:
+            if save_interval > 0 and (i + 1) % save_interval == 0 and self.data_dir:
                 self.save()
 
         # Final save
-        if self._save_path:
+        if self.data_dir:
             self.save()
 
         print(f"\nDone! Reprocessed {len(matching)} series.")
@@ -1418,6 +1655,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         try:
             all_files = []
             for res in series._scan_obj.resources.values():
+                res_label = getattr(res, 'label', '').upper()
+                if res_label == 'SNAPSHOTS':
+                    continue
                 all_files.extend(res.files.values())
             series.files = all_files
             # Store URIs and local paths for save/restore
@@ -1464,6 +1704,10 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                 # (SimpleITK's GetGDCMSeriesIDs only searches one directory level)
                 if series.files:
                     series_dir = Path(series.files[0]).parent
+                elif series._file_paths and any(series._file_paths):
+                    # Use stored file paths (preserved during save/reprocess)
+                    first_valid_path = next((p for p in series._file_paths if p), None)
+                    series_dir = Path(first_valid_path).parent if first_valid_path else self.data_dir
                 else:
                     series_dir = self.data_dir
                 volume = self.loader.load_from_path_simpleitk(
@@ -1526,7 +1770,8 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         try:
             # Read first DICOM file to extract reference info
             if series._xnat_files:
-                ds = pydicom.dcmread(files[0].open(), stop_before_pixels=True)
+                with files[0].open() as f:
+                    ds = pydicom.dcmread(f, stop_before_pixels=True)
             else:
                 ds = pydicom.dcmread(str(files[0]), stop_before_pixels=True)
 
@@ -1587,7 +1832,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             if seg_seq:
                 info_parts.append(f"{len(seg_seq)} segments")
                 seg_labels = [getattr(seg, 'SegmentLabel', '') for seg in seg_seq[:3]]
-                seg_labels = [l for l in seg_labels if l]
+                seg_labels = [label for label in seg_labels if label]
                 if seg_labels:
                     info_parts.append(', '.join(seg_labels))
 
@@ -1605,43 +1850,29 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         return ' | '.join(info_parts) if info_parts else f'{modality} data'
 
+    def _read_dicom_file(self, file_obj, stop_before_pixels=False):
+        """Read a DICOM file, handling both local paths and XNAT file objects."""
+        if hasattr(file_obj, 'open'):
+            with file_obj.open() as f:
+                return pydicom.dcmread(f, stop_before_pixels=stop_before_pixels)
+        else:
+            return pydicom.dcmread(str(file_obj), stop_before_pixels=stop_before_pixels)
+
     def _check_encoding(self, series: SeriesInfo) -> None:
-        """Check for problematic transfer syntax/encoding combinations."""
+        """Flag JPEG-2000 transfer syntax as potentially problematic in OHIF."""
         from dicom_qc.core.geometry import QCResult
-        import struct
 
         if not series.qc_report or not series.transfer_syntax:
             return
 
-        # Check JPEG-2000 for multi-layer encoding (causes OHIF rendering issues)
-        if series.transfer_syntax in self.JPEG2000_UIDS and series.files:
-            try:
-                import pydicom
-                ds = pydicom.dcmread(str(series.files[0]))
-                frame = list(pydicom.encaps.generate_pixel_data_frame(ds.PixelData))[0]
-
-                # Find COD marker and extract number of layers
-                cod_pos = frame.find(b'\xff\x52')
-                if cod_pos != -1:
-                    num_layers = struct.unpack('>H', frame[cod_pos+6:cod_pos+8])[0]
-
-                    if num_layers > 1:
-                        result = QCResult(
-                            status='WARNING',
-                            check_name='JPEG-2000 Encoding',
-                            message=f'Multi-layer JPEG-2000 ({num_layers} layers) may render blurry in OHIF',
-                            details={
-                                'transfer_syntax': series.transfer_syntax,
-                                'num_layers': num_layers,
-                                'recommendation': 'Re-encode with single layer if viewer issues occur'
-                            }
-                        )
-                        series.qc_report.results.append(result)
-
-                        if series.qc_report.overall_status == 'PASS':
-                            series.qc_report.overall_status = 'WARNING'
-            except Exception:
-                pass  # Skip encoding check if we can't parse
+        if series.transfer_syntax in self.JPEG2000_UIDS:
+            result = QCResult(
+                status='NOTE',
+                check_name='JPEG-2000 Encoding',
+                message='JPEG-2000 encoded — may render blurry in OHIF viewer',
+                details={'transfer_syntax': series.transfer_syntax},
+            )
+            series.qc_report.results.append(result)
 
     def _check_temporal_metadata(self, series: SeriesInfo) -> None:
         """Check for missing temporal metadata in dynamic/perfusion series."""
@@ -1658,8 +1889,6 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             return
 
         try:
-            import pydicom
-
             # Check first few files for temporal tags
             temporal_tags_found = {
                 'TriggerTime': False,
@@ -1670,7 +1899,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
             files_to_check = series.files[:min(5, len(series.files))]
             for dcm_file in files_to_check:
-                ds = pydicom.dcmread(str(dcm_file), stop_before_pixels=True)
+                ds = self._read_dicom_file(dcm_file, stop_before_pixels=True)
 
                 if hasattr(ds, 'TriggerTime') and ds.TriggerTime is not None:
                     temporal_tags_found['TriggerTime'] = True
@@ -1761,37 +1990,76 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                 parts.append(f"<span style='color:{c['DERIVED']}'>◇{counts['DERIVED']}</span>")
         return ' '.join(parts)
 
-    def _track_recent_thumbnail(self, series: 'SeriesInfo', recent_series: List,
-                                 recent_thumb_cache: Dict, thumbs_shown: List[int],
-                                 max_thumbs: int, max_recent: int) -> bool:
-        """Track a recently processed series for thumbnail display.
+    def _track_status_sample(self, series: 'SeriesInfo', status_samples: Dict[str, 'SeriesInfo'],
+                              thumb_cache: Dict[str, str]) -> bool:
+        """Track one sample series per status type for representative display.
+
+        Keeps one example of each status type (PASS, WARNING, FAIL, ERROR, DERIVED)
+        to show users what each status looks like.
 
         Args:
             series: Just-processed series
-            recent_series: List of recent series (modified in place)
-            recent_thumb_cache: Cache of uid -> thumbnail base64 (modified in place)
-            thumbs_shown: Single-element list with count shown (modified in place)
-            max_thumbs: Maximum thumbnails to track before stopping
-            max_recent: Maximum to keep in recent list
+            status_samples: Dict of status -> series (modified in place)
+            thumb_cache: Cache of uid -> thumbnail base64 (modified in place)
 
         Returns:
-            True if thumbnail was added, False if limit reached
+            True if this is a new status type being added
         """
-        if thumbs_shown[0] >= max_thumbs:
-            return False
+        status = series.qc_status
+        is_new_status = status not in status_samples
 
         # Get thumbnail data
+        thumb_b64 = None
         if series._thumbnail_path and self._thumb_cache:
-            recent_thumb_cache[series.uid] = self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
+            thumb_b64 = self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
         elif series.thumbnail:
-            recent_thumb_cache[series.uid] = series.thumbnail
+            thumb_b64 = series.thumbnail
 
-        recent_series.append(series)
-        if len(recent_series) > max_recent:
-            old = recent_series.pop(0)
-            recent_thumb_cache.pop(old.uid, None)
-        thumbs_shown[0] += 1
-        return True
+        # Always update the sample for this status (shows most recent example)
+        # Remove old cache entry if replacing
+        if status in status_samples:
+            old_series = status_samples[status]
+            thumb_cache.pop(old_series.uid, None)
+
+        status_samples[status] = series
+        if thumb_b64:
+            thumb_cache[series.uid] = thumb_b64
+
+        return is_new_status
+
+    def _build_series_context_map(self) -> Dict:
+        """Build a map from id(series) -> (patient_id, study_key, patient, study).
+
+        Used by _checkpoint_series to sync a single series to the DB without
+        iterating the full hierarchy.
+        """
+        ctx = {}
+        for patient_id, patient in self.patients.items():
+            for study_key, study in patient.studies.items():
+                for series_key, series in study.series.items():
+                    ctx[id(series)] = (patient_id, study_key, patient, study)
+        return ctx
+
+    def _checkpoint_series(self, series: 'SeriesInfo', ctx: Dict) -> None:
+        """Sync a single series to the database after processing.
+
+        Args:
+            series: The just-processed series
+            ctx: Context map from _build_series_context_map()
+        """
+        if not self._db:
+            return
+
+        info = ctx.get(id(series))
+        if not info:
+            return
+
+        patient_id, study_key, patient, study = info
+        self._sync_series_to_db(series, patient_id, study_key, patient, study)
+        self._db.commit()
+
+        # Free memory - volume is no longer needed after checkpointing
+        series.volume = None
 
     def _process_series_with_error_capture(self, series: 'SeriesInfo') -> None:
         """Process a series, capturing any exceptions as series.error.
@@ -1799,6 +2067,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         Args:
             series: Series to process
         """
+        # Clear stale errors before each attempt so successful reprocessing
+        # cannot remain stuck in ERROR status.
+        series.error = None
         try:
             self.process_series(series)
         except Exception as e:
@@ -1808,25 +2079,22 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         self,
         reprocess: bool = False,
         retry_errors: bool = False,
-        save_interval: int = 10,
-        parallel: bool = None,
-        max_workers: int = None,
+        max_workers: int = 4,
     ):
         """Process all series with live Jupyter progress display and grid view.
 
-        Shows progress bar, ETA, status counts, and a live-updating thumbnail grid.
+        Uses parallel processing with per-series DB checkpointing. Each series
+        is synced to the database immediately after processing (no pickle).
 
         Args:
             reprocess: If False, skip already-processed series (those with thumbnails or is_derived)
             retry_errors: If True, retry series that previously had errors
-            save_interval: Save progress every N series (0 to disable)
-            parallel: If True, use parallel processing for faster throughput.
-                     If None, auto-enable for >100 series.
-            max_workers: Number of parallel workers. Default: 4 for parallel mode.
+            max_workers: Number of parallel workers (default: 4)
 
         Returns:
             Summary counts by status
         """
+        from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
         import time
         import warnings
         import ipywidgets as widgets
@@ -1868,145 +2136,403 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                 print("No series to process")
             return self.get_summary()
 
+        # Build context map for per-series DB checkpointing
+        series_ctx = self._build_series_context_map()
+
         # Create progress widgets
         progress_bar = widgets.IntProgress(
             value=0, min=0, max=total,
             description='Processing:',
             bar_style='info',
             style={'bar_color': '#007bff', 'description_width': '80px'},
-            layout=widgets.Layout(width='100%')
+            layout=widgets.Layout(width='95%')
         )
         status_html = widgets.HTML('')
-        current_series_html = widgets.HTML('')
-        status_map_html = widgets.HTML('')
+        run_health_html = widgets.HTML('')
+        error_review_html = widgets.HTML('')
+        status_dist_html = widgets.HTML('')
         recent_thumbs_html = widgets.HTML('')
+        theme_html = widgets.HTML("""
+            <style>
+                .qc-section-title {
+                    margin: 10px 0 6px;
+                    font-size: 12px;
+                    font-weight: 700;
+                    letter-spacing: 0.02em;
+                    color: #2f3a4a;
+                }
+                .qc-section-sub {
+                    font-size: 11px;
+                    font-weight: 500;
+                    color: #6f7c91;
+                }
+                .qc-card {
+                    background: linear-gradient(180deg, #fbfdff 0%, #f5f8fc 100%);
+                    border: 1px solid #dce5f0;
+                    border-radius: 8px;
+                    padding: 8px 10px;
+                    box-shadow: 0 1px 0 rgba(19, 35, 66, 0.03);
+                }
+                .qc-mono {
+                    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+                }
+            </style>
+        """)
 
         container = widgets.VBox([
-            progress_bar, status_html, current_series_html,
-            widgets.HTML('<div style="margin:10px 0 5px;font-size:11px;color:#888;"><b>Status Overview</b> (each square = 1 series)</div>'),
-            status_map_html,
-            widgets.HTML('<div style="margin:15px 0 5px;font-size:11px;color:#888;"><b>Recent Results</b></div>'),
+            theme_html,
+            progress_bar, status_html,
+            widgets.HTML('<div class="qc-section-title">Run Health</div>'),
+            run_health_html,
+            widgets.HTML('<div class="qc-section-title">Error Review</div>'),
+            error_review_html,
+            widgets.HTML('<div class="qc-section-title">Status Distribution</div>'),
+            status_dist_html,
+            widgets.HTML('<div class="qc-section-title">Sample by Status <span class="qc-section-sub">(one example per status type)</span></div>'),
             recent_thumbs_html,
-        ], layout=widgets.Layout(width='100%'))
+        ], layout=widgets.Layout(width='95%'))
         display(container)
 
-        # Thumbnail tracking state
-        max_recent = 4
-        max_thumbs_to_show = 5
-        recent_series = []
-        recent_thumb_cache = {}
-        thumbs_shown = [0]
+        # Status-organized sample tracking (one example per status type)
+        status_samples: Dict[str, SeriesInfo] = {}  # status -> most recent series with that status
+        status_thumb_cache: Dict[str, str] = {}  # series uid -> thumbnail base64
 
         # Timing state
         start_time = time.time()
         recent_times = []
+        completion_timestamps = []
 
-        def render_status_map():
-            """Render compact status map - one small square per series."""
+        # OPTIMIZATION: Incremental status counts (avoid iterating all series)
+        status_counts = {'PASS': 0, 'WARNING': 0, 'FAIL': 0, 'ERROR': 0, 'PENDING': 0, 'DERIVED': 0, 'NOTE': 0}
+        # Initialize with already-processed series
+        for s in all_series:
+            if s not in to_process:
+                status_counts[s.qc_status] = status_counts.get(s.qc_status, 0) + 1
+        preexisting_error_count = status_counts.get('ERROR', 0)
+
+        # Throttle expensive UI sections independently
+        samples_update_interval = 1 if total < 200 else (5 if total < 2000 else 20)
+        last_samples_update = [0]
+        outcome_history = []
+        consecutive_errors = [0]
+        recent_issues = []
+        new_run_error_count = [0]
+
+        def render_status_distribution():
+            """Render compact status distribution bar."""
             c = self.STATUS_COLORS
-            squares = []
-            for series in all_series:
-                color = c.get(series.qc_status, '#444')
-                squares.append(f'<div style="width:8px;height:8px;background:{color};border-radius:1px;" title="{series.label}"></div>')
-            return f'<div style="display:flex;flex-wrap:wrap;gap:2px;max-height:150px;overflow-y:auto;">{"".join(squares)}</div>'
+            statuses = ['PASS', 'WARNING', 'FAIL', 'ERROR', 'NOTE', 'DERIVED', 'PENDING']
+            total_count = sum(status_counts.get(s, 0) for s in statuses) or 1
+            parts = []
+            for s in statuses:
+                count = status_counts.get(s, 0)
+                if count <= 0:
+                    continue
+                pct = (count / total_count) * 100
+                parts.append(
+                    f"<div style='height:12px;background:{c.get(s, '#777')};width:{pct:.2f}%;' title='{s}: {count}'></div>"
+                )
+            return (
+                "<div class='qc-card'>"
+                "<div style='border:1px solid #d5dfeb;border-radius:999px;overflow:hidden;background:#eef3f9;'>"
+                f"<div style='display:flex;width:100%;height:14px;'>{''.join(parts)}</div>"
+                "</div>"
+                "</div>"
+            )
 
-        def render_recent_thumbs():
-            """Render recent thumbnails with full detail."""
-            if not recent_series:
+        def render_run_health():
+            """Render recent outcome strip and early-stop guidance."""
+            if not outcome_history:
+                return "<div style='color:#666;font-size:11px;'>Collecting run health...</div>"
+
+            c = self.STATUS_COLORS
+            tail = outcome_history[-80:]
+            blocks = ''.join(
+                f"<div style='width:7px;height:10px;background:{c.get(status, '#777')};border-radius:1px;'></div>"
+                for status in tail
+            )
+            recent = outcome_history[-30:]
+            recent_error_rate = sum(1 for status in recent if status == 'ERROR') / max(1, len(recent))
+
+            guidance = (
+                "<span style='color:#2f6f44;'>Stable</span>"
+                if recent_error_rate < 0.5
+                else "<span style='color:#b36b00;'>Watch</span>"
+            )
+            if len(recent) >= 20 and recent_error_rate >= 0.9 and consecutive_errors[0] >= 12:
+                guidance = (
+                    "<span style='color:#b00020;'><b>High failure streak</b> - "
+                    "consider interrupting this run now.</span>"
+                )
+
+            return (
+                f"<div class='qc-card' style='display:flex;align-items:center;gap:10px;flex-wrap:wrap;'>"
+                f"<div style='display:flex;gap:2px;background:#fff;padding:5px 6px;border:1px solid #dce4ef;border-radius:6px;'>{blocks}</div>"
+                f"<div style='font-size:11px;color:#4f5f78;'>Recent errors: {recent_error_rate:.0%} | "
+                f"Consecutive errors: {consecutive_errors[0]} | {guidance}</div>"
+                "</div>"
+            )
+
+        def render_status_badges():
+            """Render readable status counts as badges."""
+            c = self.STATUS_COLORS
+            statuses = ['PASS', 'WARNING', 'FAIL', 'ERROR', 'NOTE', 'DERIVED']
+            badges = []
+            for status in statuses:
+                count = status_counts.get(status, 0)
+                if count <= 0:
+                    continue
+                fg = '#1c1c1c' if status == 'WARNING' else '#ffffff'
+                badges.append(
+                    f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;background:{c.get(status, '#777')};"
+                    f"color:{fg};font-size:11px;font-weight:700;'>{status} {count}</span>"
+                )
+            return ' '.join(badges) if badges else "<span style='color:#7a869c;'>No completed series yet</span>"
+
+        def _extract_issue_detail(series: 'SeriesInfo') -> str:
+            """Return a short error/fail detail for review panel."""
+            if series.error:
+                return series.error
+            if series.qc_report:
+                for result in series.qc_report.results:
+                    if result.status in ('FAIL', 'ERROR', 'WARNING'):
+                        if result.message:
+                            return f"{result.check_name}: {result.message}"
+                        return result.check_name
+            return "Issue detected"
+
+        def render_error_review():
+            """Render recent ERROR entries for quick triage."""
+            total_err_count = status_counts.get('ERROR', 0)
+            summary = (
+                f"<div style='font-size:11px;color:#4f5f78;'>"
+                f"<b>Total ERROR:</b> {total_err_count}"
+                f"<span style='margin-left:10px;'><b>Pre-existing:</b> {preexisting_error_count}</span>"
+                f"<span style='margin-left:10px;'><b>New this run:</b> {new_run_error_count[0]}</span>"
+                "</div>"
+            )
+            if not recent_issues:
+                return (
+                    "<div class='qc-card'>"
+                    f"{summary}"
+                    "<div style='margin-top:6px;color:#6a7890;font-size:11px;'>No new errors recorded in this run yet.</div>"
+                    "</div>"
+                )
+
+            rows = []
+            for status, label, detail in recent_issues[-6:]:
+                color = self.STATUS_COLORS.get(status, '#777')
+                fg = '#1c1c1c' if status == 'WARNING' else '#fff'
+                rows.append(
+                    f"<div style='margin-top:6px;font-size:11px;color:#42526b;'>"
+                    f"<span style='display:inline-block;min-width:56px;text-align:center;padding:1px 6px;border-radius:999px;"
+                    f"background:{color};color:{fg};font-weight:700;'>{status}</span> "
+                    f"<span style='font-weight:600;'>{html.escape(label[:42])}</span> "
+                    f"<span style='color:#6a7890;'>- {html.escape(detail[:120])}</span>"
+                    f"</div>"
+                )
+            return (
+                "<div class='qc-card'>"
+                f"{summary}"
+                f"<div style='margin-top:4px;max-height:140px;overflow-y:auto;padding-right:2px;'>{''.join(rows)}</div>"
+                "</div>"
+            )
+
+        def render_status_samples():
+            """Render one sample thumbnail per status type."""
+            if not status_samples:
                 return '<div style="color:#666;font-size:12px;">Processing...</div>'
 
             c = self.STATUS_COLORS
-            html_parts = ['<div style="display:flex;flex-wrap:wrap;gap:6px;">']
+            # Order statuses logically: PASS first, then WARNING, FAIL, ERROR, DERIVED
+            status_order = ['PASS', 'WARNING', 'FAIL', 'ERROR', 'DERIVED']
+            html_parts = ['<div style="display:flex;flex-wrap:wrap;gap:10px;">']
 
-            for series in recent_series:
-                color = c.get(series.qc_status, '#ccc')
-                thumb_b64 = recent_thumb_cache.get(series.uid)
+            for status in status_order:
+                if status not in status_samples:
+                    continue
+
+                series = status_samples[status]
+                color = c.get(status, '#ccc')
+                thumb_b64 = status_thumb_cache.get(series.uid)
 
                 if thumb_b64:
                     mime = 'image/jpeg' if series._thumbnail_path else 'image/png'
                     img = f'<img src="data:{mime};base64,{thumb_b64}" style="width:100%;display:block;">'
                 elif series.is_derived:
-                    img = f'<div style="height:70px;background:#2d1f3d;color:#9c27b0;display:flex;align-items:center;justify-content:center;font-size:11px;">{series.modality}</div>'
+                    img = f'<div style="height:84px;background:linear-gradient(135deg,#efe5fb 0%,#e7f0ff 100%);color:#7b2ca6;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;letter-spacing:0.03em;">{series.modality}</div>'
                 elif series.error:
-                    img = f'<div style="height:70px;background:#2d1515;color:#dc3545;display:flex;align-items:center;justify-content:center;font-size:10px;padding:5px;text-align:center;">{series.error[:30]}</div>'
+                    img = f'<div style="height:84px;background:linear-gradient(135deg,#ffe9ea 0%,#fff5e5 100%);color:#b00020;display:flex;align-items:center;justify-content:center;font-size:11px;padding:8px;text-align:center;">{html.escape(series.error[:48])}</div>'
                 else:
-                    img = '<div style="height:70px;background:#333;color:#666;display:flex;align-items:center;justify-content:center;">?</div>'
+                    img = '<div style="height:84px;background:#edf2f8;color:#607089;display:flex;align-items:center;justify-content:center;font-size:16px;">?</div>'
 
-                html_parts.append(f'''<div style="width:220px;border:3px solid {color};border-radius:4px;overflow:hidden;background:#000;">
+                # Status badge with name
+                status_label = status
+                html_parts.append(f'''<div style="width:220px;border:2px solid {color};border-radius:10px;overflow:hidden;background:#f7fafc;box-shadow:0 2px 6px rgba(19,35,66,0.08);">
+                    <div style="background:{color};color:{'#1c1c1c' if status == 'WARNING' else '#fff'};padding:4px 8px;font-size:11px;font-weight:700;letter-spacing:0.02em;">{status_label}</div>
                     {img}
-                    <div style="padding:4px 6px;background:#222;color:white;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                        {series.label[:35]}
+                    <div style="padding:6px 8px;background:#fff;color:#1f2d3d;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                        {html.escape(series.label[:35])}
                     </div>
                 </div>''')
 
             html_parts.append('</div>')
-
-            if thumbs_shown[0] >= max_thumbs_to_show:
-                html_parts.append(
-                    '<div style="color:#888;font-size:11px;margin-top:8px;font-style:italic;">'
-                    'Preview stopped after first few series. See status map above for progress.'
-                    '</div>'
-                )
-
             return ''.join(html_parts)
 
-        def update_progress(i: int, series: 'SeriesInfo', eta_str: str = None):
+        def update_progress(i: int, series: 'SeriesInfo', eta_str: str = None,
+                            force: bool = False, pending_count: int = None):
             """Update all progress displays."""
             elapsed = time.time() - start_time
 
             if eta_str is None:
-                if recent_times:
-                    avg_time = sum(recent_times[-10:]) / len(recent_times[-10:])
-                    remaining = (total - i) * avg_time
-                    eta_str = f"ETA: {self._format_time(remaining)}"
+                if i > 0 and elapsed > 0:
+                    # Throughput-based ETA is accurate for parallel runs.
+                    global_rate = i / elapsed
+                    recent_rate = None
+                    if len(completion_timestamps) >= 6:
+                        window = completion_timestamps[-50:]
+                        dt = window[-1] - window[0]
+                        if dt > 0:
+                            recent_rate = (len(window) - 1) / dt
+                    rate = global_rate if recent_rate is None else (0.3 * global_rate + 0.7 * recent_rate)
+                    rate = max(rate, 1e-6)
+                    remaining = total - i
+                    eta = remaining / rate
+
+                    warmup = max(24, 4 * max_workers)
+                    if i < warmup:
+                        spread = 0.50
+                    elif i < 3 * warmup:
+                        spread = 0.30
+                    else:
+                        spread = 0.20
+
+                    eta_lo = remaining / (rate * (1 + spread))
+                    eta_hi = remaining / max(rate * (1 - spread), 1e-6)
+                    eta_str = (
+                        f"ETA: {self._format_time(eta)} "
+                        f"({self._format_time(eta_lo)}-{self._format_time(eta_hi)})"
+                    )
                 else:
                     eta_str = "ETA: calculating..."
 
             progress_bar.value = i
             pct = (i / total) * 100
+            if pending_count is None:
+                pending_count = max(total - i, 0)
+            running = min(max_workers, pending_count)
+            queued = max(pending_count - running, 0)
+            rate_display = (i / elapsed) if elapsed > 0 else 0
 
-            counts = self.get_summary()
-            status_parts = [
-                f"<b>{i}/{total}</b> ({pct:.0f}%)",
-                f"Elapsed: {self._format_time(elapsed)}",
-                eta_str,
-                "|",
-                self._format_status_counts(counts),
-            ]
-            status_html.value = f"<div style='font-family:monospace;padding:5px 0;'>{' '.join(status_parts)}</div>"
-            current_series_html.value = f"<div style='color:#666;font-size:12px;'>Current: {series.label[:60]}</div>"
-            status_map_html.value = render_status_map()
+            line1 = (
+                f"<span style='font-weight:700;font-size:16px;'>{i}/{total}</span> "
+                f"<span style='color:#5b6b82;'>({pct:.0f}%)</span> "
+                f"<span style='margin-left:8px;'><b>Elapsed:</b> {self._format_time(elapsed)}</span> "
+                f"<span style='margin-left:8px;'><b>{eta_str}</b></span>"
+            )
+            line2 = (
+                f"<span><b>Queue:</b> {queued}</span> "
+                f"<span style='margin-left:8px;'><b>Running:</b> {running}</span> "
+                f"<span style='margin-left:8px;'><b>Done:</b> {i}</span> "
+                f"<span style='margin-left:8px;'><b>Rate:</b> {rate_display:.2f}/s</span>"
+            )
+            status_html.value = (
+                "<div class='qc-card qc-mono' style='padding:8px 10px;'>"
+                f"<div>{line1}</div>"
+                f"<div style='margin-top:6px;color:#4d5f78;'>{line2}</div>"
+                f"<div style='margin-top:8px;'>{render_status_badges()}</div>"
+                "</div>"
+            )
+            run_health_html.value = render_run_health()
+            error_review_html.value = render_error_review()
+            status_dist_html.value = render_status_distribution()
 
         def on_series_complete(series: 'SeriesInfo', series_time: float):
             """Handle completion of a single series."""
             recent_times.append(series_time)
-            if self._track_recent_thumbnail(series, recent_series, recent_thumb_cache,
-                                            thumbs_shown, max_thumbs_to_show, max_recent):
-                recent_thumbs_html.value = render_recent_thumbs()
+            completion_timestamps.append(time.time())
+            # Update incremental counts
+            status = series.qc_status
+            status_counts[status] = status_counts.get(status, 0) + 1
+            outcome_history.append(status)
+            if status == 'ERROR':
+                consecutive_errors[0] += 1
+                new_run_error_count[0] += 1
+            else:
+                consecutive_errors[0] = 0
+            if status == 'ERROR':
+                recent_issues.append((status, series.label, _extract_issue_detail(series)))
+            # Track sample per status type (always update to keep current example)
+            self._track_status_sample(series, status_samples, status_thumb_cache)
+            i = processed_count[0]
+            if (i - last_samples_update[0]) >= samples_update_interval:
+                recent_thumbs_html.value = render_status_samples()
+                last_samples_update[0] = i
+            # Checkpoint to DB immediately (no pickle, no race condition)
+            self._checkpoint_series(series, series_ctx)
 
         # Initial render
-        status_map_html.value = render_status_map()
+        run_health_html.value = render_run_health()
+        error_review_html.value = render_error_review()
+        status_dist_html.value = render_status_distribution()
 
-        # Auto-enable parallelism for large datasets
-        if parallel is None:
-            parallel = total > 100
-        if max_workers is None:
-            max_workers = 4 if parallel else 1
+        processed_count = [0]
 
-        if parallel and max_workers > 1:
-            self._process_all_parallel(
-                to_process, total, max_workers, start_time, save_interval,
-                update_progress, on_series_complete, render_status_map, status_map_html
+        def process_one(series):
+            t0 = time.time()
+            self._process_series_with_error_capture(series)
+            return series, t0
+
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(process_one, s): s for s in to_process}
+                pending = set(futures.keys())
+
+                while pending:
+                    # Short timeout allows widget updates to flush to frontend
+                    done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+
+                    for f in done:
+                        series = futures[f]
+                        try:
+                            _, t0 = f.result()
+                            series_time = time.time() - t0
+                        except Exception as e:
+                            series.error = str(e)
+                            series_time = 0
+
+                        processed_count[0] += 1
+
+                        on_series_complete(series, series_time)
+                        update_progress(processed_count[0], series, pending_count=len(pending))
+
+        except KeyboardInterrupt:
+            # Close DB connection so NFS can release file handles.
+            # Without this, kernel interrupt leaves .nfs lock files that
+            # prevent directory deletion.
+            if self._db:
+                try:
+                    self._db.commit()
+                    self._db.close()
+                except Exception:
+                    pass
+                self._db = None
+            elapsed = time.time() - start_time
+            counts = self.get_summary()
+            progress_bar.bar_style = 'warning'
+            status_html.value = (
+                "<div class='qc-card qc-mono' style='padding:8px 10px;'>"
+                f"<b>Interrupted</b> after {self._format_time(elapsed)} | {self._format_status_counts(counts)}</div>"
             )
-        else:
-            self._process_all_sequential(
-                to_process, total, start_time, save_interval,
-                update_progress, on_series_complete
-            )
+            print(f"\nProcessing interrupted. {sum(counts.values())} series processed so far.")
+            print("Call qc.process_all() to resume (already-processed series will be skipped).")
+            return counts
 
-        # Final save
-        if self._save_path:
+        # Final save (full sync to catch any stragglers)
+        try:
             self.save()
+        except Exception as e:
+            print(f"\nWarning: final save failed ({e}). Call qc.save() manually to retry.")
 
         # Final update
         progress_bar.value = total
@@ -2015,167 +2541,20 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         counts = self.get_summary()
 
         final_status = [
-            f"<b>✓ Complete!</b>",
+            "<b>✓ Complete!</b>",
             f"{total} processed in {self._format_time(elapsed)}",
         ]
         if skipped > 0:
             final_status.append(f"({skipped} skipped)")
         final_status.extend(["|", self._format_status_counts(counts)])
 
-        status_html.value = f"<div style='font-family:monospace;padding:5px 0;'>{' '.join(final_status)}</div>"
-        current_series_html.value = ""
+        status_html.value = (
+            "<div class='qc-card qc-mono' style='padding:8px 10px;'>"
+            f"{' '.join(final_status)}</div>"
+        )
+        recent_thumbs_html.value = render_status_samples()
 
         return counts
 
-    def _process_all_sequential(self, to_process: List, total: int, start_time: float,
-                                 save_interval: int, update_progress, on_series_complete):
-        """Process series sequentially.
-
-        Args:
-            to_process: List of series to process
-            total: Total count for progress
-            start_time: Processing start time
-            save_interval: Save every N series
-            update_progress: Callback(i, series, eta_str) to update progress display
-            on_series_complete: Callback(series, time) after each series
-        """
-        import time
-
-        for i, series in enumerate(to_process):
-            series_start = time.time()
-            update_progress(i, series)
-
-            self._process_series_with_error_capture(series)
-
-            series_time = time.time() - series_start
-            on_series_complete(series, series_time)
-
-            if save_interval > 0 and (i + 1) % save_interval == 0 and self._save_path:
-                self.save()
-
-    def _process_all_parallel(self, to_process: List, total: int, max_workers: int,
-                               start_time: float, save_interval: int,
-                               update_progress, on_series_complete, render_status_map,
-                               status_map_html):
-        """Process series in parallel using ThreadPoolExecutor.
-
-        Args:
-            to_process: List of series to process
-            total: Total count for progress
-            max_workers: Number of parallel workers
-            start_time: Processing start time
-            save_interval: Save every N series
-            update_progress: Callback(i, series, eta_str) to update progress display
-            on_series_complete: Callback(series, time) after each series
-            render_status_map: Function to render status map HTML
-            status_map_html: Widget to update with status map
-        """
-        from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
-        import threading
-        import asyncio
-        import time
-
-        processed_count = [0]
-        lock = threading.Lock()
-
-        def process_one(series):
-            self._process_series_with_error_capture(series)
-            return series
-
-        async def run_parallel():
-            loop = asyncio.get_running_loop()
-            last_update = time.time()
-
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                pending_futures = {
-                    loop.run_in_executor(executor, process_one, s): s
-                    for s in to_process
-                }
-
-                while pending_futures:
-                    done, _ = await asyncio.wait(
-                        pending_futures.keys(),
-                        timeout=0.5,
-                        return_when=asyncio.FIRST_COMPLETED
-                    )
-
-                    for future in done:
-                        series = pending_futures.pop(future)
-                        try:
-                            await future
-                        except Exception as e:
-                            series.error = str(e)
-
-                        with lock:
-                            processed_count[0] += 1
-                            i = processed_count[0]
-                            series_time = (time.time() - start_time) / i if i > 0 else 0
-
-                            update_progress(i, series)
-                            on_series_complete(series, series_time)
-
-                            if save_interval > 0 and i % save_interval == 0 and self._save_path:
-                                self.save()
-
-                        last_update = time.time()
-
-                    # Heartbeat for long-running tasks
-                    now = time.time()
-                    if now - last_update > 1.0 and pending_futures:
-                        i = processed_count[0]
-                        remaining = len(pending_futures)
-                        if to_process:
-                            update_progress(i, to_process[0], "Processing...")
-                        last_update = now
-
-                    await asyncio.sleep(0.01)
-
-        def run_fallback():
-            last_series = to_process[0] if to_process else None
-
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(process_one, s): s for s in to_process}
-                pending = set(futures.keys())
-
-                while pending:
-                    done, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
-
-                    for f in done:
-                        series = futures[f]
-                        try:
-                            f.result()
-                        except Exception as e:
-                            series.error = str(e)
-
-                        processed_count[0] += 1
-                        last_series = series
-                        series_time = (time.time() - start_time) / processed_count[0]
-
-                        on_series_complete(series, series_time)
-
-                    i = processed_count[0]
-                    if last_series:
-                        update_progress(i, last_series)
-                    status_map_html.value = render_status_map()
-
-                    if save_interval > 0 and i % save_interval == 0 and self._save_path:
-                        self.save()
-
-        # Try asyncio, fall back to synchronous
-        try:
-            try:
-                loop = asyncio.get_running_loop()
-                import nest_asyncio
-                nest_asyncio.apply()
-                loop.run_until_complete(run_parallel())
-            except RuntimeError:
-                asyncio.run(run_parallel())
-        except ImportError:
-            print("Note: For better progress display, install nest_asyncio: pip install nest_asyncio")
-            run_fallback()
-        except Exception:
-            run_fallback()
-
     # Backward compatibility alias
     process_all_interactive = process_all
-

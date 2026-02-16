@@ -88,11 +88,11 @@ Interactive 3-pane viewer for Jupyter:
 5. Orientation Consistency - valid unit vectors
 6. Frame of Reference - slices coplanar
 7. Gap Detection - missing slices, irregular spacing
-8. Voxel Anisotropy - ratio > 4x = FAIL, > 2x = WARNING
+8. Voxel Anisotropy - ratio > 2x = WARNING
 9. Slice Count - truncation detection
 
 **DICOM-level checks (per series):**
-10. JPEG-2000 Encoding - multi-layer issues (OHIF blur)
+10. JPEG-2000 Encoding - flags J2K transfer syntax (some render blurry in OHIF)
 11. Temporal Metadata - missing timing for perfusion series
 
 ## Viewer Compatibility Notes
@@ -159,7 +159,7 @@ jupyter notebook examples/local.ipynb
 
 **Horizontal scroll in viewer**: Check `overflow='hidden'` on widget layouts
 
-**Blurry images in OHIF**: Check for multi-layer JPEG-2000 encoding
+**Blurry images in OHIF**: Some JPEG-2000 encoded data renders blurry; root cause not yet identified
 
 **Slice thickness mismatch**: SliceThickness tag vs calculated spacing from positions - both shown when different
 

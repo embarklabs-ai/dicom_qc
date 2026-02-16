@@ -195,11 +195,19 @@ class ThumbnailCache:
                 img.save(buf, format='JPEG', quality=jpeg_quality)
                 raw_data = buf.getvalue()
             except ImportError:
-                # PIL not available - save as PNG
-                pass
+                # PIL not available - save PNG with correct extension
+                path = self.get_path_for_series(series_uid).with_suffix('.png')
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw_data)
+                thumb_hash = hashlib.sha256(series_uid.encode()).hexdigest()[:16]
+                return f"{thumb_hash[:2]}/{thumb_hash}.png"
             except Exception:
-                # Conversion failed - save as PNG
-                pass
+                # Conversion failed - save PNG with correct extension
+                path = self.get_path_for_series(series_uid).with_suffix('.png')
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw_data)
+                thumb_hash = hashlib.sha256(series_uid.encode()).hexdigest()[:16]
+                return f"{thumb_hash[:2]}/{thumb_hash}.png"
 
         return self.save_thumbnail(series_uid, raw_data)
 
@@ -259,18 +267,28 @@ class ThumbnailCache:
         """
         removed = 0
         for subdir in self.cache_dir.iterdir():
-            if subdir.is_dir() and len(subdir.name) == 2:
-                for thumb in subdir.iterdir():
-                    if thumb.is_file():
-                        rel_path = f"{subdir.name}/{thumb.name}"
-                        if rel_path not in valid_paths:
-                            thumb.unlink()
-                            removed += 1
-                # Remove empty subdirectory
+            if subdir.is_dir():
+                for thumb in subdir.rglob('*.jpg'):
+                    rel_path = str(thumb.relative_to(self.cache_dir))
+                    if rel_path not in valid_paths:
+                        thumb.unlink()
+                        removed += 1
+                for thumb in subdir.rglob('*.png'):
+                    rel_path = str(thumb.relative_to(self.cache_dir))
+                    if rel_path not in valid_paths:
+                        thumb.unlink()
+                        removed += 1
+                # Remove empty directories bottom-up
+                for dirpath in sorted(subdir.rglob('*'), reverse=True):
+                    if dirpath.is_dir():
+                        try:
+                            dirpath.rmdir()
+                        except OSError:
+                            pass
                 try:
                     subdir.rmdir()
                 except OSError:
-                    pass  # Not empty
+                    pass
         return removed
 
     def get_all_paths(self) -> Set[str]:
@@ -281,44 +299,10 @@ class ThumbnailCache:
         """
         paths = set()
         for subdir in self.cache_dir.iterdir():
-            if subdir.is_dir() and len(subdir.name) == 2:
-                for thumb in subdir.iterdir():
-                    if thumb.is_file():
-                        paths.add(f"{subdir.name}/{thumb.name}")
+            if subdir.is_dir():
+                for thumb in subdir.rglob('*.jpg'):
+                    paths.add(str(thumb.relative_to(self.cache_dir)))
+                for thumb in subdir.rglob('*.png'):
+                    paths.add(str(thumb.relative_to(self.cache_dir)))
         return paths
 
-    def get_cache_size_bytes(self) -> int:
-        """Get total size of all thumbnails in bytes.
-
-        Returns:
-            Total bytes used by thumbnail files.
-        """
-        total = 0
-        for subdir in self.cache_dir.iterdir():
-            if subdir.is_dir():
-                for thumb in subdir.iterdir():
-                    if thumb.is_file():
-                        total += thumb.stat().st_size
-        return total
-
-    def get_cache_stats(self) -> dict:
-        """Get cache statistics.
-
-        Returns:
-            Dict with count, total_bytes, avg_bytes.
-        """
-        count = 0
-        total_bytes = 0
-        for subdir in self.cache_dir.iterdir():
-            if subdir.is_dir():
-                for thumb in subdir.iterdir():
-                    if thumb.is_file():
-                        count += 1
-                        total_bytes += thumb.stat().st_size
-
-        return {
-            'count': count,
-            'total_bytes': total_bytes,
-            'total_mb': total_bytes / (1024 * 1024),
-            'avg_bytes': total_bytes // count if count > 0 else 0,
-        }

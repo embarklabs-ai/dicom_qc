@@ -25,8 +25,8 @@ def create_sitk_image(
     """
     slices, rows, cols = shape
     # Create random data with some structure
-    np.random.seed(42)
-    data = np.random.rand(slices, rows, cols).astype(np.float32) * 1000
+    rng = np.random.default_rng(42)
+    data = rng.random((slices, rows, cols), dtype=np.float32) * 1000
 
     # SimpleITK uses (x, y, z) = (cols, rows, slices)
     image = sitk.GetImageFromArray(data)

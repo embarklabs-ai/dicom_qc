@@ -133,9 +133,9 @@ def isotropic_volume() -> DicomVolume:
 def ct_volume() -> DicomVolume:
     """Create a CT DicomVolume for testing CT-specific behavior."""
     slices, rows, cols = 50, 512, 512
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
     # CT-like values: bone ~1000 HU, soft tissue ~40 HU, air ~-1000 HU
-    data = np.random.randint(-1000, 1000, size=(slices, rows, cols)).astype(np.float32)
+    data = rng.integers(-1000, 1000, size=(slices, rows, cols)).astype(np.float32)
 
     image = sitk.GetImageFromArray(data)
     image.SetSpacing((0.5, 0.5, 2.0))  # col, row, slice

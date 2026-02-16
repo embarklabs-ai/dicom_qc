@@ -1,8 +1,9 @@
 """HTML report generation for QuickCheck."""
 
 from datetime import datetime
+from html import escape
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 import shutil
 
 if TYPE_CHECKING:
@@ -158,17 +159,17 @@ class QuickCheckHTMLMixin:
 
         # Copy thumbnails to output directory
         thumb_paths = {}  # series_uid -> relative path
+        thumb_src_dir = self.data_dir / '_dicom_qc' / 'thumbnails' if self.data_dir else None
         for series in self.get_all_series():
             thumb_rel_path = None
-            if hasattr(series, '_thumbnail_path') and series._thumbnail_path:
-                if hasattr(self, '_thumb_cache') and self._thumb_cache:
-                    src = self._thumb_cache.cache_dir / series._thumbnail_path
-                    if src.exists():
-                        thumb_filename = series._thumbnail_path.replace('/', '_')
-                        dst = thumb_out / thumb_filename
-                        shutil.copy(src, dst)
-                        thumb_rel_path = f"thumbnails/{thumb_filename}"
-            elif series.thumbnail:
+            if hasattr(series, '_thumbnail_path') and series._thumbnail_path and thumb_src_dir:
+                src = thumb_src_dir / series._thumbnail_path
+                if src.exists():
+                    thumb_filename = series._thumbnail_path.replace('/', '_')
+                    dst = thumb_out / thumb_filename
+                    shutil.copy(src, dst)
+                    thumb_rel_path = f"thumbnails/{thumb_filename}"
+            if not thumb_rel_path and series.thumbnail:
                 # Convert base64 to file
                 import base64
                 import hashlib
@@ -304,7 +305,7 @@ class QuickCheckHTMLMixin:
             <strong>Check:</strong>
             <select id="check-filter" onchange="updateFilter()" style="padding:3px 8px;border-radius:4px;border:1px solid #ccc;">
                 <option value="">All Checks</option>
-                {''.join(f'<option value="{name}">{name}</option>' for name in check_names)}
+                {''.join(f'<option value="{escape(name, quote=True)}">{escape(name)}</option>' for name in check_names)}
             </select>
         </span>
         <span style="color:#888;font-size:12px;margin-left:20px;">(In Jupyter: click "Trust HTML" for filters. Open in browser for links to work.)</span>
@@ -315,12 +316,12 @@ class QuickCheckHTMLMixin:
         """Generate HTML for patient/study/series sections."""
         html = ''
         for patient_id, patient in sorted(self.patients.items()):
-            html += f'    <div class="patient-section">\n'
-            html += f'        <div class="patient-header">{patient.label}</div>\n'
+            html += '    <div class="patient-section">\n'
+            html += f'        <div class="patient-header">{escape(patient.label)}</div>\n'
 
-            for study_uid, study in sorted(patient.studies.items(), key=lambda x: x[1].date):
-                html += f'        <div class="study-section">\n'
-                html += f'            <div class="study-header">{study.label}</div>\n'
+            for study_uid, study in sorted(patient.studies.items(), key=lambda x: x[1].date or ''):
+                html += '        <div class="study-section">\n'
+                html += f'            <div class="study-header">{escape(study.label)}</div>\n'
                 html += '            <div class="qc-grid">\n'
 
                 ohif_url = self._build_ohif_url(patient, study)
@@ -337,12 +338,12 @@ class QuickCheckHTMLMixin:
         """Generate HTML for patient/study/series sections with external thumbnails."""
         html = ''
         for patient_id, patient in sorted(self.patients.items()):
-            html += f'    <div class="patient-section">\n'
-            html += f'        <div class="patient-header">{patient.label}</div>\n'
+            html += '    <div class="patient-section">\n'
+            html += f'        <div class="patient-header">{escape(patient.label)}</div>\n'
 
-            for study_uid, study in sorted(patient.studies.items(), key=lambda x: x[1].date):
-                html += f'        <div class="study-section">\n'
-                html += f'            <div class="study-header">{study.label}</div>\n'
+            for study_uid, study in sorted(patient.studies.items(), key=lambda x: x[1].date or ''):
+                html += '        <div class="study-section">\n'
+                html += f'            <div class="study-header">{escape(study.label)}</div>\n'
                 html += '            <div class="qc-grid">\n'
 
                 ohif_url = self._build_ohif_url(patient, study)
@@ -366,16 +367,16 @@ class QuickCheckHTMLMixin:
         status = series.qc_status.lower()
 
         if thumb_path:
-            img_html = f'<img src="{thumb_path}" alt="{series.description}">'
+            img_html = f'<img src="{thumb_path}" alt="{escape(series.description or "", quote=True)}">'
         elif series.is_derived:
             img_html = (f'<div style="height:113px;background:#2d1f3d;color:#9c27b0;'
                        f'display:flex;align-items:center;justify-content:center;font-size:16px;">'
-                       f'{series.modality}</div>')
+                       f'{escape(series.modality)}</div>')
         elif series.error:
             error_msg = series.error[:50] if len(series.error) > 50 else series.error
             img_html = (f'<div style="height:113px;background:#333;color:#999;'
                        f'display:flex;align-items:center;justify-content:center;'
-                       f'font-size:12px;padding:10px;text-align:center;">{error_msg}</div>')
+                       f'font-size:12px;padding:10px;text-align:center;">{escape(error_msg)}</div>')
         else:
             img_html = ('<div style="height:113px;background:#333;color:#999;'
                        'display:flex;align-items:center;justify-content:center;">No image</div>')
@@ -384,14 +385,14 @@ class QuickCheckHTMLMixin:
         reason_html = ''
         if series.error:
             reason_html = (f'<div style="padding:6px 10px;font-size:11px;'
-                          f'background:#f8d7da;color:#721c24;">Error: {series.error[:50]}</div>')
+                          f'background:#f8d7da;color:#721c24;">Error: {escape(series.error[:50])}</div>')
         elif series.is_derived and series.derived_info:
             reason_html = (f'<div style="padding:6px 10px;font-size:11px;'
-                          f'background:#2d1f3d;color:#e0c3fc;">{series.derived_info}</div>')
+                          f'background:#2d1f3d;color:#e0c3fc;">{escape(series.derived_info)}</div>')
         elif series.qc_report and series.qc_status in ('FAIL', 'WARNING', 'NOTE'):
             issues = [r for r in series.qc_report.results if r.status in ('FAIL', 'WARNING', 'NOTE')]
             if issues:
-                issue_lines = [f'<b>{r.check_name}:</b> {r.message}' for r in issues[:3]]
+                issue_lines = [f'<b>{escape(r.check_name)}:</b> {escape(r.message)}' for r in issues[:3]]
                 if series.qc_status == 'FAIL':
                     bg_color, text_color = '#f8d7da', '#721c24'
                 elif series.qc_status == 'WARNING':
@@ -416,7 +417,7 @@ class QuickCheckHTMLMixin:
         return f'''                {link_start}<div class="qc-thumb {status}" data-status="{status}" data-checks="{data_checks}" style="{link_style}">
                     {img_html}
                     <div class="info">
-                        <span class="series-label">{series.label}</span>
+                        <span class="series-label">{escape(series.label)}</span>
                         <span class="status-badge {status}">{series.qc_status}</span>
                     </div>
                     {reason_html}
@@ -432,12 +433,16 @@ class QuickCheckHTMLMixin:
         """
         status = series.qc_status.lower()
 
-        # Get thumbnail - check disk cache first, then base64
+        # Get thumbnail - check disk first, then base64 in memory
         thumb_b64 = None
-        if hasattr(series, '_thumbnail_path') and series._thumbnail_path and hasattr(self, '_thumb_cache') and self._thumb_cache:
-            thumb_b64 = self._thumb_cache.get_thumbnail_base64(series._thumbnail_path)
-            mime = 'image/jpeg'
-        elif series.thumbnail:
+        mime = 'image/png'
+        if hasattr(series, '_thumbnail_path') and series._thumbnail_path and self.data_dir:
+            thumb_path = self.data_dir / '_dicom_qc' / 'thumbnails' / series._thumbnail_path
+            if thumb_path.exists():
+                import base64
+                thumb_b64 = base64.b64encode(thumb_path.read_bytes()).decode()
+                mime = 'image/jpeg'
+        if not thumb_b64 and series.thumbnail:
             thumb_b64 = series.thumbnail
             mime = 'image/png'
 
@@ -447,7 +452,7 @@ class QuickCheckHTMLMixin:
             # SVG placeholder for derived types
             img_src = (f'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="340" height="113">'
                        f'<rect fill="%232d1f3d" width="340" height="113"/>'
-                       f'<text x="170" y="56" fill="%239c27b0" text-anchor="middle" dy=".3em" font-size="16">{series.modality}</text></svg>')
+                       f'<text x="170" y="56" fill="%239c27b0" text-anchor="middle" dy=".3em" font-size="16">{escape(series.modality)}</text></svg>')
         else:
             img_src = ('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="340" height="113">'
                        '<rect fill="%23333" width="340" height="113"/>'
@@ -456,7 +461,7 @@ class QuickCheckHTMLMixin:
         # Build info/reason text
         reason_html = ''
         if series.error:
-            reason_html = f'<div class="qc-reason" style="padding:6px 10px;font-size:11px;background:#f8d7da;color:#721c24;">Error: {series.error}</div>'
+            reason_html = f'<div class="qc-reason" style="padding:6px 10px;font-size:11px;background:#f8d7da;color:#721c24;">Error: {escape(series.error)}</div>'
         elif series.is_derived:
             # Show derived info
             info_parts = []
@@ -465,11 +470,11 @@ class QuickCheckHTMLMixin:
             if series.referenced_series_uid:
                 info_parts.append(f'→ {series.referenced_series_uid[:30]}...')
             if info_parts:
-                reason_html = f'<div class="qc-reason" style="padding:6px 10px;font-size:11px;background:#2d1f3d;color:#e0c3fc;">{"<br>".join(info_parts)}</div>'
+                reason_html = f'<div class="qc-reason" style="padding:6px 10px;font-size:11px;background:#2d1f3d;color:#e0c3fc;">{"<br>".join(escape(p) for p in info_parts)}</div>'
         elif series.qc_report and series.qc_status in ('FAIL', 'WARNING', 'NOTE'):
             issues = [r for r in series.qc_report.results if r.status in ('FAIL', 'WARNING', 'NOTE')]
             if issues:
-                issue_lines = [f'<div style="margin:2px 0;"><b>{r.check_name}:</b> {r.message}</div>' for r in issues]
+                issue_lines = [f'<div style="margin:2px 0;"><b>{escape(r.check_name)}:</b> {escape(r.message)}</div>' for r in issues]
                 if series.qc_status == 'FAIL':
                     bg_color, text_color = '#f8d7da', '#721c24'
                 elif series.qc_status == 'WARNING':
@@ -490,9 +495,9 @@ class QuickCheckHTMLMixin:
         data_checks = ','.join(series_check_names)
 
         return f'''                {link_start}<div class="qc-thumb {status}" data-status="{status}" data-checks="{data_checks}" style="{link_style}">
-                    <img src="{img_src}" alt="{series.description}">
+                    <img src="{img_src}" alt="{escape(series.description or '', quote=True)}">
                     <div class="info">
-                        <span class="series-label">{series.label}</span>
+                        <span class="series-label">{escape(series.label)}</span>
                         <span class="status-badge {status}">{series.qc_status}</span>
                     </div>
                     {reason_html}
@@ -521,7 +526,7 @@ class QuickCheckHTMLMixin:
             <h4 style="margin:20px 0 10px 0;color:#495057;">DICOM-Level Checks</h4>
             <table style="width:100%;border-collapse:collapse;font-size:12px;">
                 <tr style="background:#f8f9fa;"><th style="text-align:left;padding:8px;border:1px solid #dee2e6;">Check</th><th style="text-align:left;padding:8px;border:1px solid #dee2e6;">Logic</th><th style="text-align:left;padding:8px;border:1px solid #dee2e6;">Rationale</th></tr>
-                <tr><td style="padding:8px;border:1px solid #dee2e6;"><b>JPEG-2000 Encoding</b></td><td style="padding:8px;border:1px solid #dee2e6;">WARNING if multi-layer (&gt;1) JPEG-2000 encoding detected</td><td style="padding:8px;border:1px solid #dee2e6;">Multi-layer J2K causes blurry rendering in OHIF viewer</td></tr>
+                <tr><td style="padding:8px;border:1px solid #dee2e6;"><b>JPEG-2000 Encoding</b></td><td style="padding:8px;border:1px solid #dee2e6;">NOTE if JPEG-2000 transfer syntax detected</td><td style="padding:8px;border:1px solid #dee2e6;">Some JPEG-2000 data renders blurry in OHIF viewer</td></tr>
                 <tr><td style="padding:8px;border:1px solid #dee2e6;"><b>Temporal Metadata</b></td><td style="padding:8px;border:1px solid #dee2e6;">WARNING if dynamic series missing TriggerTime, AcquisitionTime, etc.</td><td style="padding:8px;border:1px solid #dee2e6;">Missing temporal tags cause failures in strict 4D viewers</td></tr>
             </table>
         </div>

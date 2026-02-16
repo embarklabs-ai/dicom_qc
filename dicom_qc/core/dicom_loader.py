@@ -15,7 +15,6 @@ except ImportError:
 from dicom_qc.core.volume import DicomVolume
 from dicom_qc.utils.errors import (
     DicomLoadError,
-    IncompleteDicomError,
     MissingTagError,
     GeometryError,
 )
@@ -52,8 +51,8 @@ def _filter_4d_generic(
     """
     Detect 4D data and filter to first temporal position (shared logic).
 
-    OPTIMIZED: Uses sampling instead of reading all files. For 1000+ files,
-    this reduces reads from 1000+ to ~100, dramatically improving performance.
+    Reads all files for robust detection. This is slower but more reliable
+    than sampling, especially for XNAT where file reads may fail intermittently.
 
     Args:
         files: List of files (paths or XNAT file objects)
@@ -67,9 +66,31 @@ def _filter_4d_generic(
         return files, None
 
     # Read first file for NumberOfTemporalPositions
-    first_ds = read_metadata(files[0])
+    # Try multiple files in case some fail to read
+    first_ds = None
+    for f in files[:10]:
+        first_ds = read_metadata(f)
+        if first_ds is not None:
+            break
+
     if first_ds is None:
+        # Can't read any files - log warning and return all
+        logger.warning(
+            "4D detection: Could not read any of first 10 files. "
+            "Check XNAT connection or file access."
+        )
         return files, None
+
+    # Get slice normal for oblique-safe sorting (Method 2)
+    normal = np.array([0, 0, 1])  # Default to Z
+    if first_ds is not None and hasattr(first_ds, 'ImageOrientationPatient'):
+        try:
+            ori = [float(x) for x in first_ds.ImageOrientationPatient]
+            row_dir = np.array(ori[:3])
+            col_dir = np.array(ori[3:])
+            normal = np.cross(row_dir, col_dir)
+        except (ValueError, IndexError):
+            pass
 
     # Method 1: Check explicit temporal position tags
     num_temporal = getattr(first_ds, 'NumberOfTemporalPositions', None)
@@ -92,55 +113,60 @@ def _filter_4d_generic(
             first_timepoint = min(temporal_groups.keys())
             return temporal_groups[first_timepoint], len(temporal_groups)
 
-    # Method 2: Detect by finding duplicate slice locations (OPTIMIZED)
-    sample_size = min(100, len(files))
+    # Method 2: Detect by finding duplicate slice locations
+    # Read ALL files for robust detection (not sampling)
     slice_positions = []
-    sampled_files_data = []  # Cache for reuse
+    file_data = []  # (file, position_tuple, full_position)
+    failed_reads = 0
 
-    for f in files[:sample_size]:
+    for f in files:
         ds = read_metadata(f)
         if ds is None:
+            failed_reads += 1
             continue
         if hasattr(ds, 'ImagePositionPatient'):
             pos = tuple(round(float(x), 2) for x in ds.ImagePositionPatient)
+            instance_num = int(getattr(ds, 'InstanceNumber', 0) or 0)
             slice_positions.append(pos)
-            sampled_files_data.append((f, pos, ds.ImagePositionPatient[2]))
+            file_data.append((f, pos, np.array([float(x) for x in ds.ImagePositionPatient]), instance_num))
+
+    # If most files failed to read, log warning
+    if failed_reads > len(files) * 0.5:
+        logger.warning(
+            f"4D detection: {failed_reads}/{len(files)} file reads failed. "
+            "Check XNAT connection or local cache."
+        )
 
     if slice_positions:
         unique_positions = set(slice_positions)
         # If many files but few unique positions, likely 4D
         if len(unique_positions) < len(slice_positions) * 0.5:
-            num_unique_slices = len(unique_positions)
-            estimated_timepoints = len(files) // num_unique_slices
+            from collections import Counter
+            pos_counts = Counter(slice_positions)
+            most_common_count = pos_counts.most_common(1)[0][1]
 
-            if estimated_timepoints > 1:
-                # Use sampled data first
+            if most_common_count > 1:
+                # Sort by InstanceNumber so we consistently pick
+                # the first temporal volume for each position
+                file_data.sort(key=lambda x: x[3])
+
+                # Take first occurrence of each position
                 seen_positions = set()
                 file_positions = []
 
-                for f, pos, z in sampled_files_data:
+                for f, pos, full_pos, _inst in file_data:
                     if pos not in seen_positions:
                         seen_positions.add(pos)
-                        file_positions.append((f, z))
-
-                # Read additional files only if needed
-                if len(seen_positions) < num_unique_slices:
-                    for f in files[sample_size:]:
-                        if len(seen_positions) >= num_unique_slices:
-                            break
-                        ds = read_metadata(f)
-                        if ds is None:
-                            continue
-                        if hasattr(ds, 'ImagePositionPatient'):
-                            pos = tuple(round(float(x), 2) for x in ds.ImagePositionPatient)
-                            if pos not in seen_positions:
-                                seen_positions.add(pos)
-                                file_positions.append((f, ds.ImagePositionPatient[2]))
+                        file_positions.append((f, full_pos))
 
                 if file_positions:
-                    file_positions.sort(key=lambda x: float(x[1]))
+                    # Sort by position along slice normal for oblique-safe ordering
+                    file_positions.sort(key=lambda x: float(np.dot(x[1], normal)))
                     first_timepoint_files = [f for f, _ in file_positions]
-                    return first_timepoint_files, estimated_timepoints
+
+                    estimated_timepoints = len(files) // len(first_timepoint_files)
+                    if estimated_timepoints > 1:
+                        return first_timepoint_files, estimated_timepoints
 
     return files, None
 
@@ -337,11 +363,6 @@ class DicomLoader:
             # Check for missing geometry tags
             missing_geometry_tags = _check_missing_geometry_tags(first_dcm)
 
-            if hasattr(first_dcm, 'ImageOrientationPatient') and first_dcm.ImageOrientationPatient is not None:
-                image_orientation = np.array(first_dcm.ImageOrientationPatient, dtype=np.float64)
-            else:
-                image_orientation = np.array([1, 0, 0, 0, 1, 0], dtype=np.float64)
-
             # Get actual SliceThickness from DICOM tag (not SimpleITK's calculated spacing)
             slice_thickness_tag = getattr(first_dcm, 'SliceThickness', None)
             if slice_thickness_tag is not None:
@@ -351,7 +372,6 @@ class DicomLoader:
             series_description = ''
             patient_position = None
             study_uid = None
-            image_orientation = np.array([1, 0, 0, 0, 1, 0], dtype=np.float64)
             slice_thickness_tag = None
             missing_geometry_tags = list(GEOMETRY_TAGS)
 
@@ -548,7 +568,7 @@ class DicomLoader:
             warnings: List to append warnings to (thread-safe local variable)
         """
         try:
-            import pydicom
+            import pydicom  # noqa: F401
         except ImportError:
             return None
 
@@ -609,10 +629,6 @@ class DicomLoader:
         if not datasets:
             raise DicomLoadError("No valid DICOM files could be loaded")
 
-        # Check minimum slice count (allow single-slice volumes)
-        if len(datasets) < 1:
-            raise IncompleteDicomError(expected=total_files, found=len(datasets))
-
         # Sort slices (skip for single-slice volumes)
         if len(datasets) > 1:
             try:
@@ -628,9 +644,15 @@ class DicomLoader:
             pixel_arrays = []
             for ds in datasets:
                 arr = ds.pixel_array
-                # Handle multi-frame DICOM (take first frame for now)
+                # Handle 3D+ arrays: multi-frame grayscale or single-frame color
                 if arr.ndim > 2:
-                    arr = arr[0] if arr.shape[0] < arr.shape[-1] else arr[:, :, 0]
+                    samples = getattr(ds, 'SamplesPerPixel', 1)
+                    if samples > 1:
+                        # Color image (e.g. RGB) — take first channel
+                        arr = arr[:, :, 0]
+                    else:
+                        # Multi-frame grayscale — take first frame
+                        arr = arr[0]
                 pixel_arrays.append(arr.astype(np.float32))
 
             volume_data = np.stack(pixel_arrays, axis=0)

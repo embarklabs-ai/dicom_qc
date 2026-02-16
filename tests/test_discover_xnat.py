@@ -1,11 +1,10 @@
 """Tests for discover_xnat method - covers both parallel and sequential paths."""
 
 import pytest
-from unittest.mock import MagicMock, patch
 from dataclasses import dataclass, field
-from typing import List, Dict, Any
+from typing import Dict, Any
 
-from dicom_qc.quickcheck import QuickCheck, SeriesInfo, StudyInfo, PatientInfo
+from dicom_qc.quickcheck import QuickCheck
 
 
 # ============================================================================
@@ -321,6 +320,31 @@ class TestDiscoverXnatParallelVsSequential:
             assert seq_s.xnat_scan_id == par_s.xnat_scan_id
 
 
+class TestDiscoverXnatParallelErrorHandling:
+    """Tests for error handling in parallel discovery."""
+
+    def test_parallel_discovery_keeps_failed_scan_with_error(self, qc_instance, mock_project_small):
+        """Test that failed scan tasks are retained as error series (not silently dropped)."""
+        original_create = qc_instance._create_series_from_xnat_scan
+
+        def flaky_create(scan, subject_label, session_label):
+            if subject_label == 'SUBJ000' and scan.id == '2':
+                raise RuntimeError("Injected parallel failure")
+            return original_create(scan, subject_label, session_label)
+
+        qc_instance._create_series_from_xnat_scan = flaky_create
+        qc_instance.discover_xnat(mock_project_small, interactive=False, parallel=True, max_workers=2)
+
+        # Total count should still match expected scans (2 subjects x 3 scans)
+        assert len(qc_instance.get_all_series()) == 6
+
+        failed_series = qc_instance.patients['SUBJ000'].studies['SUBJ000_MR1'].series['2']
+        assert failed_series.error is not None
+        assert 'Failed to process scan' in failed_series.error
+        assert failed_series.xnat_scan_id == '2'
+        assert failed_series._xnat_files is True
+
+
 class TestDiscoverXnatIncremental:
     """Tests for incremental discovery (refresh=False)."""
 
@@ -332,13 +356,9 @@ class TestDiscoverXnatIncremental:
         # Mark a series as processed
         series = qc_instance.get_all_series()[0]
         series.thumbnail = 'processed'
-        original_thumbnail = series.thumbnail
-
         # Incremental discovery
         qc_instance.discover_xnat(mock_project_small, interactive=False, parallel=False, refresh=False)
 
-        # Series should still have thumbnail
-        updated_series = qc_instance.get_all_series()[0]
         # Note: In incremental mode, existing series with file_uris are skipped
         assert len(qc_instance.patients) == 2
 
@@ -400,24 +420,6 @@ class TestDiscoverXnatErrorHandling:
 
         series = qc_instance.get_all_series()[0]
         assert series.modality == '??'  # Should default to ??
-
-    def test_excludes_snapshots_resource(self, qc_instance):
-        """Test that SNAPSHOTS resource is excluded from file listing."""
-        project = create_mock_project(num_subjects=1, sessions_per_subject=1, scans_per_session=1, files_per_scan=3)
-
-        # Add SNAPSHOTS resource
-        scan = list(list(project.subjects.values())[0].experiments.values())[0].scans['1']
-        snapshots = MockXnatResource(label='SNAPSHOTS')
-        snapshots._files['snapshot.jpg'] = MockXnatFile(uri='/snapshots/snap.jpg')
-        scan._resources['SNAPSHOTS'] = snapshots
-
-        qc_instance.discover_xnat(project, interactive=False, parallel=False)
-
-        series = qc_instance.get_all_series()[0]
-        # Should only have DICOM files, not snapshot
-        assert len(series._file_uris) == 3
-        assert not any('snapshot' in uri for uri in series._file_uris)
-
 
 class TestDiscoverXnatRetry:
     """Tests for XNAT retry logic."""

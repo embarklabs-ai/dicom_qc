@@ -6,7 +6,7 @@ with fast SQL-based filtering and pagination.
 
 import json
 import sqlite3
-from datetime import datetime
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -24,6 +24,10 @@ class QCDatabase:
     """
 
     SCHEMA_VERSION = 1
+    VALID_ORDER_COLUMNS = {
+        'patient_id', 'study_date', 'series_number', 'qc_status',
+        'series_description', 'modality', 'xnat_session_label',
+    }
 
     def __init__(self, db_path: Path):
         """Initialize database connection.
@@ -35,6 +39,9 @@ class QCDatabase:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # Enable foreign key constraints (required for CASCADE to work)
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._lock = threading.RLock()
         self._init_schema()
 
     def _init_schema(self):
@@ -169,13 +176,14 @@ class QCDatabase:
 
     def clear_all(self):
         """Clear all data from the database (for re-migration)."""
-        cursor = self._conn.cursor()
-        cursor.execute("DELETE FROM qc_results")
-        cursor.execute("DELETE FROM series_files")
-        cursor.execute("DELETE FROM series")
-        cursor.execute("DELETE FROM studies")
-        cursor.execute("DELETE FROM patients")
-        self._conn.commit()
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute("DELETE FROM qc_results")
+            cursor.execute("DELETE FROM series_files")
+            cursor.execute("DELETE FROM series")
+            cursor.execute("DELETE FROM studies")
+            cursor.execute("DELETE FROM patients")
+            self._conn.commit()
 
     # =========================================================================
     # Patient CRUD
@@ -188,18 +196,19 @@ class QCDatabase:
         xnat_subject_id: str = None,
     ) -> int:
         """Insert patient, return database ID. Updates if exists."""
-        cursor = self._conn.cursor()
-        cursor.execute("""
-            INSERT INTO patients (patient_id, patient_name, xnat_subject_id)
-            VALUES (?, ?, ?)
-            ON CONFLICT(patient_id) DO UPDATE SET
-                patient_name = excluded.patient_name,
-                xnat_subject_id = excluded.xnat_subject_id,
-                updated_at = CURRENT_TIMESTAMP
-            RETURNING id
-        """, (patient_id, patient_name, xnat_subject_id))
-        row = cursor.fetchone()
-        return row[0]
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                INSERT INTO patients (patient_id, patient_name, xnat_subject_id)
+                VALUES (?, ?, ?)
+                ON CONFLICT(patient_id) DO UPDATE SET
+                    patient_name = excluded.patient_name,
+                    xnat_subject_id = excluded.xnat_subject_id,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING id
+            """, (patient_id, patient_name, xnat_subject_id))
+            row = cursor.fetchone()
+            return row[0]
 
     def get_patient_id_by_patient_id(self, patient_id: str) -> Optional[int]:
         """Get database ID for a patient by their patient_id."""
@@ -224,25 +233,26 @@ class QCDatabase:
         xnat_experiment_id: str = None,
     ) -> int:
         """Insert study, return database ID. Updates if exists."""
-        cursor = self._conn.cursor()
-        cursor.execute("""
-            INSERT INTO studies (
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                INSERT INTO studies (
+                    patient_db_id, study_uid, study_date, study_description,
+                    xnat_session_label, xnat_experiment_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(patient_db_id, study_uid) DO UPDATE SET
+                    study_date = excluded.study_date,
+                    study_description = excluded.study_description,
+                    xnat_session_label = excluded.xnat_session_label,
+                    xnat_experiment_id = excluded.xnat_experiment_id
+                RETURNING id
+            """, (
                 patient_db_id, study_uid, study_date, study_description,
                 xnat_session_label, xnat_experiment_id
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(patient_db_id, study_uid) DO UPDATE SET
-                study_date = excluded.study_date,
-                study_description = excluded.study_description,
-                xnat_session_label = excluded.xnat_session_label,
-                xnat_experiment_id = excluded.xnat_experiment_id
-            RETURNING id
-        """, (
-            patient_db_id, study_uid, study_date, study_description,
-            xnat_session_label, xnat_experiment_id
-        ))
-        row = cursor.fetchone()
-        return row[0]
+            ))
+            row = cursor.fetchone()
+            return row[0]
 
     def get_study_id(self, patient_db_id: int, study_uid: str) -> Optional[int]:
         """Get database ID for a study."""
@@ -274,35 +284,36 @@ class QCDatabase:
         file_count: int = 0,
     ) -> int:
         """Insert series, return database ID. Updates if exists."""
-        cursor = self._conn.cursor()
-        cursor.execute("""
-            INSERT INTO series (
-                study_db_id, series_uid, series_number, series_description,
-                modality, qc_status, is_derived, derived_info, error_message,
-                thumbnail_path, xnat_scan_id, transfer_syntax, file_count
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(study_db_id, series_uid) DO UPDATE SET
-                series_number = excluded.series_number,
-                series_description = excluded.series_description,
-                modality = excluded.modality,
-                qc_status = excluded.qc_status,
-                is_derived = excluded.is_derived,
-                derived_info = excluded.derived_info,
-                error_message = excluded.error_message,
-                thumbnail_path = excluded.thumbnail_path,
-                xnat_scan_id = excluded.xnat_scan_id,
-                transfer_syntax = excluded.transfer_syntax,
-                file_count = excluded.file_count,
-                updated_at = CURRENT_TIMESTAMP
-            RETURNING id
-        """, (
-            study_db_id, series_uid, str(series_number) if series_number is not None else None,
-            series_description, modality, qc_status, int(is_derived), derived_info,
-            error_message, thumbnail_path, xnat_scan_id, transfer_syntax, file_count
-        ))
-        row = cursor.fetchone()
-        return row[0]
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                INSERT INTO series (
+                    study_db_id, series_uid, series_number, series_description,
+                    modality, qc_status, is_derived, derived_info, error_message,
+                    thumbnail_path, xnat_scan_id, transfer_syntax, file_count
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(study_db_id, series_uid) DO UPDATE SET
+                    series_number = excluded.series_number,
+                    series_description = excluded.series_description,
+                    modality = excluded.modality,
+                    qc_status = excluded.qc_status,
+                    is_derived = excluded.is_derived,
+                    derived_info = excluded.derived_info,
+                    error_message = excluded.error_message,
+                    thumbnail_path = excluded.thumbnail_path,
+                    xnat_scan_id = excluded.xnat_scan_id,
+                    transfer_syntax = excluded.transfer_syntax,
+                    file_count = excluded.file_count,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING id
+            """, (
+                study_db_id, series_uid, str(series_number) if series_number is not None else None,
+                series_description, modality, qc_status, int(is_derived), derived_info,
+                error_message, thumbnail_path, xnat_scan_id, transfer_syntax, file_count
+            ))
+            row = cursor.fetchone()
+            return row[0]
 
     def get_series_id(self, study_db_id: int, series_uid: str) -> Optional[int]:
         """Get database ID for a series."""
@@ -315,10 +326,11 @@ class QCDatabase:
 
     def update_series_thumbnail(self, series_db_id: int, thumbnail_path: str):
         """Update thumbnail path for a series."""
-        self._conn.execute(
-            "UPDATE series SET thumbnail_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (thumbnail_path, series_db_id)
-        )
+        with self._lock:
+            self._conn.execute(
+                "UPDATE series SET thumbnail_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (thumbnail_path, series_db_id)
+            )
 
     def update_series_qc_status(
         self,
@@ -327,14 +339,15 @@ class QCDatabase:
         error_message: str = None,
     ):
         """Update QC status for a series."""
-        self._conn.execute("""
-            UPDATE series SET
-                qc_status = ?,
-                error_message = ?,
-                processed_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        """, (qc_status, error_message, series_db_id))
+        with self._lock:
+            self._conn.execute("""
+                UPDATE series SET
+                    qc_status = ?,
+                    error_message = ?,
+                    processed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (qc_status, error_message, series_db_id))
 
     # =========================================================================
     # QC Results
@@ -350,30 +363,28 @@ class QCDatabase:
     ):
         """Insert a single QC check result."""
         details_json = json.dumps(details) if details else None
-        self._conn.execute("""
-            INSERT INTO qc_results (series_db_id, check_name, status, message, details_json)
-            VALUES (?, ?, ?, ?, ?)
-        """, (series_db_id, check_name, status, message, details_json))
+        with self._lock:
+            self._conn.execute("""
+                INSERT INTO qc_results (series_db_id, check_name, status, message, details_json)
+                VALUES (?, ?, ?, ?, ?)
+            """, (series_db_id, check_name, status, message, details_json))
 
     def insert_qc_results_from_report(self, series_db_id: int, qc_report):
         """Insert all QC results from a QCReport object."""
-        # Clear existing results for this series
-        self._conn.execute("DELETE FROM qc_results WHERE series_db_id = ?", (series_db_id,))
+        with self._lock:
+            # Clear existing results for this series
+            self._conn.execute("DELETE FROM qc_results WHERE series_db_id = ?", (series_db_id,))
 
-        for result in qc_report.results:
-            details = None
-            if hasattr(result, 'to_dict'):
-                details = result.to_dict()
-            elif hasattr(result, 'details'):
-                details = result.details
+            for result in qc_report.results:
+                details = getattr(result, 'details', None)
 
-            self.insert_qc_result(
-                series_db_id,
-                check_name=result.check_name,
-                status=result.status,
-                message=result.message,
-                details=details,
-            )
+                self.insert_qc_result(
+                    series_db_id,
+                    check_name=result.check_name,
+                    status=result.status,
+                    message=result.message,
+                    details=details,
+                )
 
     def get_qc_results(self, series_db_id: int) -> List[dict]:
         """Get all QC results for a series."""
@@ -406,22 +417,23 @@ class QCDatabase:
         local_paths: List[str] = None,
     ):
         """Insert file paths for a series."""
-        # Clear existing
-        self._conn.execute("DELETE FROM series_files WHERE series_db_id = ?", (series_db_id,))
+        with self._lock:
+            # Clear existing
+            self._conn.execute("DELETE FROM series_files WHERE series_db_id = ?", (series_db_id,))
 
-        file_uris = file_uris or []
-        local_paths = local_paths or []
+            file_uris = file_uris or []
+            local_paths = local_paths or []
 
-        # Pad shorter list with None
-        max_len = max(len(file_uris), len(local_paths))
-        file_uris = file_uris + [None] * (max_len - len(file_uris))
-        local_paths = local_paths + [None] * (max_len - len(local_paths))
+            # Pad shorter list with None
+            max_len = max(len(file_uris), len(local_paths))
+            file_uris = file_uris + [None] * (max_len - len(file_uris))
+            local_paths = local_paths + [None] * (max_len - len(local_paths))
 
-        for i, (uri, path) in enumerate(zip(file_uris, local_paths)):
-            self._conn.execute("""
-                INSERT INTO series_files (series_db_id, file_uri, local_path, file_order)
-                VALUES (?, ?, ?, ?)
-            """, (series_db_id, uri, path, i))
+            for i, (uri, path) in enumerate(zip(file_uris, local_paths)):
+                self._conn.execute("""
+                    INSERT INTO series_files (series_db_id, file_uri, local_path, file_order)
+                    VALUES (?, ?, ?, ?)
+                """, (series_db_id, uri, path, i))
 
     def get_series_files(self, series_db_id: int) -> List[Tuple[str, str]]:
         """Get file URIs and paths for a series."""
@@ -460,6 +472,21 @@ class QCDatabase:
             List of dicts with series info including patient/study context.
         """
         filters = filters or {}
+
+        # Validate order_by to prevent SQL injection
+        validated_parts = []
+        for part in order_by.split(','):
+            part = part.strip()
+            # Handle "column ASC/DESC"
+            tokens = part.split()
+            col_name = tokens[0].strip()
+            direction = ''
+            if len(tokens) > 1 and tokens[1].upper() in ('ASC', 'DESC'):
+                direction = ' ' + tokens[1].upper()
+            if col_name not in self.VALID_ORDER_COLUMNS:
+                raise ValueError(f"Invalid order_by column: {col_name}")
+            validated_parts.append(col_name + direction)
+        validated_order_by = ', '.join(validated_parts)
 
         # Build WHERE clause
         conditions = []
@@ -517,7 +544,7 @@ class QCDatabase:
             JOIN studies st ON s.study_db_id = st.id
             JOIN patients p ON st.patient_db_id = p.id
             WHERE {where_clause}
-            ORDER BY {order_by}
+            ORDER BY {validated_order_by}
             LIMIT ? OFFSET ?
         """
         params.extend([limit, offset])
@@ -625,11 +652,12 @@ class QCDatabase:
 
     def set_session_value(self, key: str, value: str):
         """Set a session metadata value."""
-        self._conn.execute("""
-            INSERT INTO qc_session (key, value)
-            VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        """, (key, value))
+        with self._lock:
+            self._conn.execute("""
+                INSERT INTO qc_session (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """, (key, value))
 
     def get_session_value(self, key: str) -> Optional[str]:
         """Get a session metadata value."""
@@ -640,16 +668,179 @@ class QCDatabase:
         return row['value'] if row else None
 
     # =========================================================================
+    # Cleanup
+    # =========================================================================
+
+    def delete_orphan_series(self, valid_series_db_ids: set) -> tuple:
+        """Delete series not in the given set of valid database IDs.
+
+        Args:
+            valid_series_db_ids: Set of series database IDs to keep.
+                               All other series will be deleted.
+
+        Returns:
+            Tuple of (num_deleted, list_of_thumbnail_paths) for cleanup.
+        """
+        if not valid_series_db_ids:
+            return (0, [])
+
+        with self._lock:
+            # Get all current series IDs
+            cursor = self._conn.execute("SELECT id FROM series")
+            all_ids = {row['id'] for row in cursor.fetchall()}
+
+            # Find orphans
+            orphan_ids = all_ids - valid_series_db_ids
+            if not orphan_ids:
+                return (0, [])
+
+            # Get thumbnail paths before deleting (for disk cleanup)
+            orphan_thumbnail_paths = []
+            orphan_list = list(orphan_ids)
+            for i in range(0, len(orphan_list), 500):
+                batch = orphan_list[i:i+500]
+                placeholders = ','.join('?' * len(batch))
+                cursor = self._conn.execute(
+                    f"SELECT thumbnail_path FROM series WHERE id IN ({placeholders}) AND thumbnail_path IS NOT NULL",
+                    batch
+                )
+                orphan_thumbnail_paths.extend([row['thumbnail_path'] for row in cursor.fetchall()])
+
+            # Delete orphans (CASCADE will clean up qc_results and series_files)
+            for i in range(0, len(orphan_list), 500):
+                batch = orphan_list[i:i+500]
+                placeholders = ','.join('?' * len(batch))
+                self._conn.execute(
+                    f"DELETE FROM series WHERE id IN ({placeholders})",
+                    batch
+                )
+
+            # Clean up orphan studies (studies with no series)
+            self._conn.execute("""
+                DELETE FROM studies WHERE id NOT IN (
+                    SELECT DISTINCT study_db_id FROM series
+                )
+            """)
+
+            # Clean up orphan patients (patients with no studies)
+            self._conn.execute("""
+                DELETE FROM patients WHERE id NOT IN (
+                    SELECT DISTINCT patient_db_id FROM studies
+                )
+            """)
+
+            return (len(orphan_ids), orphan_thumbnail_paths)
+
+    # =========================================================================
+    # Bulk load (for restoring hierarchy from DB)
+    # =========================================================================
+
+    def load_all(self) -> List[dict]:
+        """Load full patient/study/series hierarchy as joined rows.
+
+        Returns:
+            List of dicts with all patient, study, and series fields joined.
+            Ordered by patient_id, study_date, series_number.
+        """
+        cursor = self._conn.execute("""
+            SELECT
+                s.id as series_db_id,
+                s.series_uid,
+                s.series_number,
+                s.series_description,
+                s.modality,
+                s.qc_status,
+                s.is_derived,
+                s.derived_info,
+                s.error_message,
+                s.thumbnail_path,
+                s.xnat_scan_id,
+                s.transfer_syntax,
+                s.file_count,
+                s.processed_at,
+                st.id as study_db_id,
+                st.study_uid,
+                st.study_date,
+                st.study_description,
+                st.xnat_session_label,
+                st.xnat_experiment_id,
+                p.id as patient_db_id,
+                p.patient_id,
+                p.patient_name,
+                p.xnat_subject_id
+            FROM series s
+            JOIN studies st ON s.study_db_id = st.id
+            JOIN patients p ON st.patient_db_id = p.id
+            ORDER BY p.patient_id, st.study_date, CAST(s.series_number AS INTEGER), s.series_number
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def load_all_qc_results(self) -> Dict[int, List[dict]]:
+        """Load all QC results grouped by series_db_id.
+
+        Returns:
+            Dict mapping series_db_id to list of QC result dicts.
+        """
+        cursor = self._conn.execute("""
+            SELECT series_db_id, check_name, status, message, details_json
+            FROM qc_results
+            ORDER BY series_db_id, id
+        """)
+
+        results: Dict[int, List[dict]] = {}
+        for row in cursor.fetchall():
+            series_id = row['series_db_id']
+            if series_id not in results:
+                results[series_id] = []
+            results[series_id].append({
+                'check_name': row['check_name'],
+                'status': row['status'],
+                'message': row['message'],
+                'details': json.loads(row['details_json']) if row['details_json'] else None,
+            })
+        return results
+
+    def load_all_series_files(self) -> Dict[int, List[Tuple[str, str]]]:
+        """Load all series file paths grouped by series_db_id.
+
+        Returns:
+            Dict mapping series_db_id to list of (file_uri, local_path) tuples.
+        """
+        cursor = self._conn.execute("""
+            SELECT series_db_id, file_uri, local_path
+            FROM series_files
+            ORDER BY series_db_id, file_order
+        """)
+
+        files: Dict[int, List[Tuple[str, str]]] = {}
+        for row in cursor.fetchall():
+            series_id = row['series_db_id']
+            if series_id not in files:
+                files[series_id] = []
+            files[series_id].append((row['file_uri'], row['local_path']))
+        return files
+
+    # =========================================================================
     # Transaction control
     # =========================================================================
 
     def commit(self):
         """Commit pending changes."""
-        self._conn.commit()
+        with self._lock:
+            self._conn.commit()
 
     def close(self):
         """Close database connection."""
-        self._conn.close()
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+    def __del__(self):
+        """Safety net: close connection on garbage collection."""
+        self.close()
 
     def __enter__(self):
         """Context manager entry."""

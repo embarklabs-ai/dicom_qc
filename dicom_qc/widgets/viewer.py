@@ -1,12 +1,11 @@
 """Interactive DICOM viewer with windowing and slice navigation."""
 
 from io import BytesIO
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple
 import ipywidgets as widgets
-from IPython.display import display, clear_output
+from IPython.display import display
 import matplotlib.pyplot as plt
 import numpy as np
-from PIL import Image as PILImage
 
 from dicom_qc.core.volume import DicomVolume
 

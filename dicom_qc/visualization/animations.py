@@ -5,11 +5,9 @@ import os
 import tempfile
 from typing import Tuple, Optional, Dict
 
-import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 
-from dicom_qc.core.volume import DicomVolume
 from dicom_qc.visualization.base import VolumeRenderer
 
 

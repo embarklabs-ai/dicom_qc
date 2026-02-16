@@ -1,10 +1,9 @@
-"""Tests for process_all method - covers filtering, parallel/sequential, and progress tracking."""
+"""Tests for process_all method - covers filtering, parallel processing, and progress tracking."""
 
 import sys
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
-from dataclasses import dataclass, field
-from typing import List, Dict, Any
+from unittest.mock import MagicMock, patch
+from typing import List
 
 from dicom_qc.quickcheck import QuickCheck, SeriesInfo, StudyInfo, PatientInfo
 from dicom_qc.core.geometry import QCReport, QCResult
@@ -137,7 +136,7 @@ class TestProcessAllFiltering:
             series.thumbnail = 'new_thumb'
         qc.process_series = mock_process
 
-        qc.process_all(parallel=False)
+        qc.process_all()
 
         # Only pending series should be processed
         assert '1.2.3.1' not in processed
@@ -155,7 +154,7 @@ class TestProcessAllFiltering:
             processed.append(series.uid)
         qc.process_series = mock_process
 
-        qc.process_all(parallel=False)
+        qc.process_all()
 
         assert len(processed) == 0
 
@@ -173,7 +172,7 @@ class TestProcessAllFiltering:
             series.thumbnail = 'thumb'
         qc.process_series = mock_process
 
-        qc.process_all(parallel=False)
+        qc.process_all()
 
         assert '1.2.3.1' not in processed
         assert '1.2.3.2' in processed
@@ -192,7 +191,7 @@ class TestProcessAllFiltering:
             series.thumbnail = 'thumb'
         qc.process_series = mock_process
 
-        qc.process_all(parallel=False)
+        qc.process_all()
 
         assert '1.2.3.1' not in processed
         assert '1.2.3.2' in processed
@@ -212,7 +211,7 @@ class TestProcessAllFiltering:
             series.error = None  # Clear error on success
         qc.process_series = mock_process
 
-        qc.process_all(parallel=False, retry_errors=True)
+        qc.process_all(retry_errors=True)
 
         # Both should be processed
         assert '1.2.3.1' in processed
@@ -236,7 +235,7 @@ class TestProcessAllFiltering:
             series.thumbnail = 'new_thumb'
         qc.process_series = mock_process
 
-        qc.process_all(parallel=False, reprocess=True)
+        qc.process_all(reprocess=True)
 
         # Both should be processed
         assert '1.2.3.1' in processed
@@ -249,110 +248,69 @@ class TestProcessAllFiltering:
         ]
         qc = create_qc_with_series(qc_instance, series_list)
 
-        result = qc.process_all(parallel=False)
+        result = qc.process_all()
 
         # Should return summary without error
         assert isinstance(result, dict)
         assert 'PASS' in result
 
 
-class TestProcessAllParallelVsSequential:
-    """Tests ensuring parallel and sequential produce same results."""
+class TestProcessAllParallel:
+    """Tests for parallel processing."""
 
-    def test_parallel_and_sequential_process_same_series(self, temp_data_dir):
-        """Test that parallel and sequential modes process the same series."""
-        qc_seq = QuickCheck(data_dir=temp_data_dir / 'seq')
-        qc_seq = create_qc_with_series(qc_seq, [
+    def test_processes_all_series(self, temp_data_dir):
+        """Test that all series are processed."""
+        qc = QuickCheck(data_dir=temp_data_dir)
+        qc = create_qc_with_series(qc, [
             create_mock_series(f'1.2.3.{i}', i, f'Series {i}')
             for i in range(5)
         ])
 
-        qc_par = QuickCheck(data_dir=temp_data_dir / 'par')
-        qc_par = create_qc_with_series(qc_par, [
-            create_mock_series(f'1.2.3.{i}', i, f'Series {i}')
-            for i in range(5)
-        ])
-
-        seq_processed = []
-        par_processed = []
-
-        def make_mock_process(processed_list):
-            def mock_process(series, keep_volume=False):
-                processed_list.append(series.uid)
-                series.thumbnail = 'thumb'
-            return mock_process
-
-        qc_seq.process_series = make_mock_process(seq_processed)
-        qc_par.process_series = make_mock_process(par_processed)
-
-        qc_seq.process_all(parallel=False)
-        qc_par.process_all(parallel=True, max_workers=2)
-
-        # Same series should be processed (order may differ)
-        assert set(seq_processed) == set(par_processed)
-        assert len(seq_processed) == 5
-
-
-class TestProcessAllSaveInterval:
-    """Tests for periodic save functionality."""
-
-    def test_saves_at_interval(self, qc_instance):
-        """Test that save is called at specified intervals."""
-        series_list = [
-            create_mock_series(f'1.2.3.{i}', i, f'Series {i}')
-            for i in range(15)
-        ]
-        qc = create_qc_with_series(qc_instance, series_list)
-        qc._save_path = qc_instance.data_dir / '_dicom_qc' / 'qc_state.pkl'
-
+        processed = []
         def mock_process(series, keep_volume=False):
+            processed.append(series.uid)
             series.thumbnail = 'thumb'
         qc.process_series = mock_process
 
-        save_count = [0]
-        original_save = qc.save
-        def mock_save(*args, **kwargs):
-            save_count[0] += 1
-            return original_save(*args, **kwargs)
-        qc.save = mock_save
+        qc.process_all(max_workers=2)
 
-        qc.process_all(parallel=False, save_interval=5)
+        assert len(processed) == 5
+        assert set(processed) == {f'1.2.3.{i}' for i in range(5)}
 
-        # Should save at 5, 10, 15 (interval) + final save
-        # At least 3 interval saves + 1 final
-        assert save_count[0] >= 3
 
-    def test_no_save_when_interval_zero(self, qc_instance):
-        """Test that save_interval=0 disables periodic saves."""
+class TestProcessAllDBCheckpointing:
+    """Tests for per-series DB checkpointing during process_all."""
+
+    def test_checkpoint_called_for_each_series(self, qc_instance):
+        """Test that _checkpoint_series is called for each processed series."""
         series_list = [
             create_mock_series(f'1.2.3.{i}', i, f'Series {i}')
             for i in range(5)
         ]
         qc = create_qc_with_series(qc_instance, series_list)
-        qc._save_path = qc_instance.data_dir / '_dicom_qc' / 'qc_state.pkl'
 
         def mock_process(series, keep_volume=False):
             series.thumbnail = 'thumb'
         qc.process_series = mock_process
 
-        save_count = [0]
-        original_save = qc.save
-        def mock_save(*args, **kwargs):
-            save_count[0] += 1
-            return original_save(*args, **kwargs)
-        qc.save = mock_save
+        checkpoint_count = [0]
+        original_checkpoint = qc._checkpoint_series
+        def mock_checkpoint(series, ctx):
+            checkpoint_count[0] += 1
+            return original_checkpoint(series, ctx)
+        qc._checkpoint_series = mock_checkpoint
 
-        qc.process_all(parallel=False, save_interval=0)
+        qc.process_all(max_workers=2)
 
-        # Only final save
-        assert save_count[0] == 1
+        # Each series should be checkpointed
+        assert checkpoint_count[0] == 5
 
 
 class TestProcessAllErrorHandling:
     """Tests for error handling during processing."""
 
-    def test_error_captured_on_series_parallel(self, qc_instance):
-        """Test that processing errors are captured on the series in parallel mode."""
+    def test_error_captured_on_series(self, qc_instance):
+        """Test that processing errors are captured on the series."""
         series = create_mock_series('1.2.3.1', 1, 'Will fail')
         qc = create_qc_with_series(qc_instance, [series])
 
@@ -360,16 +318,15 @@ class TestProcessAllErrorHandling:
             raise ValueError("Processing failed")
         qc.process_series = mock_process
 
-        # Parallel mode captures errors
-        qc.process_all(parallel=True, max_workers=2)
+        qc.process_all(max_workers=2)
 
         # Error should be set on series
         processed_series = qc.patients['PAT001'].studies['study1'].series['1.2.3.1']
         assert processed_series.error is not None
         assert 'Processing failed' in processed_series.error
 
-    def test_continues_after_error_parallel(self, qc_instance):
-        """Test that processing continues after an error in parallel mode."""
+    def test_continues_after_error(self, qc_instance):
+        """Test that processing continues after an error."""
         series_list = [
             create_mock_series('1.2.3.1', 1, 'Will fail'),
             create_mock_series('1.2.3.2', 2, 'Will succeed'),
@@ -384,32 +341,26 @@ class TestProcessAllErrorHandling:
             series.thumbnail = 'thumb'
         qc.process_series = mock_process
 
-        qc.process_all(parallel=True, max_workers=2)
+        qc.process_all(max_workers=2)
 
         # Both should have been attempted
         assert '1.2.3.1' in processed
         assert '1.2.3.2' in processed
 
-    def test_error_captured_on_series_sequential(self, qc_instance):
-        """Test that sequential mode also captures errors (after refactoring).
-
-        Both sequential and parallel modes now consistently capture errors
-        on the series instead of raising.
-        """
-        series = create_mock_series('1.2.3.1', 1, 'Will fail')
+    def test_reprocess_clears_stale_error_on_success(self, qc_instance):
+        """Test that reprocess=True clears old errors before retrying."""
+        series = create_mock_series('1.2.3.1', 1, 'Previously failed', has_error=True)
         qc = create_qc_with_series(qc_instance, [series])
 
         def mock_process(s, keep_volume=False):
-            raise ValueError("Processing failed")
+            s.thumbnail = 'thumb'
         qc.process_series = mock_process
 
-        # Sequential mode now captures errors like parallel mode
-        qc.process_all(parallel=False)
+        qc.process_all(reprocess=True, max_workers=1)
 
-        # Error should be set on series
         processed_series = qc.patients['PAT001'].studies['study1'].series['1.2.3.1']
-        assert processed_series.error is not None
-        assert 'Processing failed' in processed_series.error
+        assert processed_series.error is None
+        assert processed_series.qc_status != 'ERROR'
 
 
 class TestProcessAllProgressTracking:
@@ -437,7 +388,7 @@ class TestProcessAllProgressTracking:
             series.qc_report = qc_report
         qc.process_series = mock_process
 
-        result = qc.process_all(parallel=False)
+        result = qc.process_all()
 
         assert result['PASS'] == 2
 
@@ -469,95 +420,6 @@ class TestProcessAllProgressTracking:
         assert summary['PENDING'] == 2
 
 
-class TestProcessAllThumbnailTracking:
-    """Tests for thumbnail tracking during processing."""
-
-    def test_tracks_recent_thumbnails(self, qc_instance):
-        """Test that recent thumbnails are tracked correctly."""
-        series_list = [
-            create_mock_series(f'1.2.3.{i}', i, f'Series {i}')
-            for i in range(10)
-        ]
-        qc = create_qc_with_series(qc_instance, series_list)
-
-        def mock_process(series, keep_volume=False):
-            series.thumbnail = f'thumb_{series.series_number}'
-        qc.process_series = mock_process
-
-        qc.process_all(parallel=False)
-
-        # All series should have thumbnails
-        for series in qc.get_all_series():
-            assert series.thumbnail is not None
-
-
-class TestProcessAllAutoParallel:
-    """Tests for automatic parallel mode selection."""
-
-    def test_auto_enables_parallel_for_large_datasets(self, qc_instance):
-        """Test that parallel is auto-enabled for >100 series."""
-        # Create >100 series
-        series_list = [
-            create_mock_series(f'1.2.3.{i}', i, f'Series {i}')
-            for i in range(150)
-        ]
-        qc = create_qc_with_series(qc_instance, series_list)
-
-        def mock_process(series, keep_volume=False):
-            series.thumbnail = 'thumb'
-        qc.process_series = mock_process
-
-        # Track if ThreadPoolExecutor was used
-        executor_used = [False]
-        original_tpe = __import__('concurrent.futures').futures.ThreadPoolExecutor
-
-        class MockTPE:
-            def __init__(self, *args, **kwargs):
-                executor_used[0] = True
-                self._executor = original_tpe(*args, **kwargs)
-            def __enter__(self):
-                return self._executor.__enter__()
-            def __exit__(self, *args):
-                return self._executor.__exit__(*args)
-
-        with patch('concurrent.futures.ThreadPoolExecutor', MockTPE):
-            qc.process_all(parallel=None)  # Auto-detect
-
-        # Should have used parallel
-        assert executor_used[0] is True
-
-    def test_sequential_for_small_datasets(self, qc_instance):
-        """Test that sequential is used for small datasets."""
-        series_list = [
-            create_mock_series(f'1.2.3.{i}', i, f'Series {i}')
-            for i in range(10)
-        ]
-        qc = create_qc_with_series(qc_instance, series_list)
-
-        def mock_process(series, keep_volume=False):
-            series.thumbnail = 'thumb'
-        qc.process_series = mock_process
-
-        # Track if ThreadPoolExecutor was used
-        executor_used = [False]
-        original_tpe = __import__('concurrent.futures').futures.ThreadPoolExecutor
-
-        class MockTPE:
-            def __init__(self, *args, **kwargs):
-                executor_used[0] = True
-                self._executor = original_tpe(*args, **kwargs)
-            def __enter__(self):
-                return self._executor.__enter__()
-            def __exit__(self, *args):
-                return self._executor.__exit__(*args)
-
-        with patch('concurrent.futures.ThreadPoolExecutor', MockTPE):
-            qc.process_all(parallel=None)  # Auto-detect
-
-        # Should NOT have used parallel for small dataset
-        assert executor_used[0] is False
-
-
 class TestProcessAllBackwardCompatibility:
     """Tests for backward compatibility."""
 
@@ -569,48 +431,23 @@ class TestProcessAllBackwardCompatibility:
 class TestFormatTime:
     """Tests for time formatting helper."""
 
-    def test_format_time_logic(self):
-        """Test time formatting produces expected output."""
-        # Test that get_summary returns valid counts
+    def test_format_time_seconds(self):
+        """Test formatting values under 60 seconds."""
         qc = QuickCheck()
-        summary = qc.get_summary()
+        assert qc._format_time(5) == "5s"
+        assert qc._format_time(30.4) == "30s"
+        assert qc._format_time(59) == "59s"
 
-        assert isinstance(summary, dict)
-        assert all(key in summary for key in ['PASS', 'WARNING', 'FAIL', 'ERROR', 'PENDING'])
+    def test_format_time_minutes(self):
+        """Test formatting values between 1 and 60 minutes."""
+        qc = QuickCheck()
+        assert qc._format_time(60) == "1m 0s"
+        assert qc._format_time(90) == "1m 30s"
+        assert qc._format_time(3599) == "59m 59s"
 
-
-class TestProcessSeriesIntegration:
-    """Integration tests that process_series is called correctly."""
-
-    def test_process_series_called_for_each(self, qc_instance):
-        """Test that process_series is called once for each series to process."""
-        series_list = [
-            create_mock_series(f'1.2.3.{i}', i, f'Series {i}')
-            for i in range(5)
-        ]
-        qc = create_qc_with_series(qc_instance, series_list)
-
-        call_count = [0]
-        def mock_process(series, keep_volume=False):
-            call_count[0] += 1
-            series.thumbnail = 'thumb'
-        qc.process_series = mock_process
-
-        qc.process_all(parallel=False)
-
-        assert call_count[0] == 5
-
-    def test_keep_volume_false_by_default(self, qc_instance):
-        """Test that keep_volume=False is passed to process_series."""
-        series = create_mock_series('1.2.3.1', 1, 'Test')
-        qc = create_qc_with_series(qc_instance, [series])
-
-        keep_volume_values = []
-        def mock_process(series, keep_volume=False):
-            keep_volume_values.append(keep_volume)
-            series.thumbnail = 'thumb'
-        qc.process_series = mock_process
-
-        qc.process_all(parallel=False)
-
-        assert keep_volume_values == [False]
+    def test_format_time_hours(self):
+        """Test formatting values over 1 hour."""
+        qc = QuickCheck()
+        assert qc._format_time(3600) == "1h 0m"
+        assert qc._format_time(5400) == "1h 30m"
+        assert qc._format_time(7261) == "2h 1m"

@@ -198,7 +198,7 @@ class SessionBrowser:
 
         with self.status_output:
             clear_output()
-            print(f'Loading sessions...')
+            print('Loading sessions...')
 
         try:
             experiments = self.xnat.get_experiments(project, subject)
@@ -232,7 +232,7 @@ class SessionBrowser:
 
         with self.status_output:
             clear_output()
-            print(f'Loading scans...')
+            print('Loading scans...')
 
         try:
             scans = self.xnat.get_scans(project, subject, experiment)
