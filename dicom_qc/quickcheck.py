@@ -404,14 +404,17 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                     import base64
                     try:
                         raw_data = base64.b64decode(series.thumbnail)
-                        thumb_path.write_bytes(raw_data)
-                        rel_path = self._thumb_cache.get_relative_path_xnat(
-                            series._xnat_subject_label, series._xnat_session_label, series.xnat_scan_id
-                        )
+                        if self._thumb_cache._looks_like_jpeg(raw_data):
+                            thumb_path.write_bytes(raw_data)
+                            rel_path = self._thumb_cache.get_relative_path_xnat(
+                                series._xnat_subject_label, series._xnat_session_label, series.xnat_scan_id
+                            )
+                        else:
+                            rel_path = None
                     except Exception:
                         rel_path = None
                 else:
-                    rel_path = self._thumb_cache.save_thumbnail_from_base64(
+                    rel_path = self._thumb_cache.save_jpeg_thumbnail_from_base64(
                         series.uid, series.thumbnail
                     )
                 if rel_path:
@@ -737,7 +740,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         print("Reset complete. Ready for discover().")
         return self
 
-    def connect_xnat(self, session: Any) -> 'QuickCheck':
+    def connect_xnat(self, session: Any) -> None:
         """Connect an XNAT session for file access after loading from save.
 
         After loading from a save file, call this method with your XNAT session
@@ -746,9 +749,6 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         Args:
             session: xnatpy session object (from xnat.connect())
-
-        Returns:
-            self for chaining
 
         Example:
             qc = QuickCheck.from_save(data_dir)
@@ -1010,7 +1010,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
     def discover_xnat(self, project: Any, interactive: bool = True, refresh: bool = None,
                       read_dicom: bool = False, parallel: bool = None,
-                      max_workers: int = 8) -> Dict[str, PatientInfo]:
+                      max_workers: int = 8) -> None:
         """Discover DICOM series from an XNAT project.
 
         Uses XNAT hierarchy (subject/session/scan) instead of DICOM headers.
@@ -1027,8 +1027,8 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                      If None, auto-enable for >10 subjects.
             max_workers: Number of parallel workers. Default: 8.
 
-        Returns:
-            Dict of PatientInfo keyed by subject label
+        Notes:
+            Updates ``self.patients`` in place.
         """
         # Auto-detect refresh mode: skip full re-discovery if data already loaded
         if refresh is None:
@@ -2357,8 +2357,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                 thumb_b64 = status_thumb_cache.get(series.uid)
 
                 if thumb_b64:
-                    mime = 'image/jpeg' if series._thumbnail_path else 'image/png'
-                    img = f'<img src="data:{mime};base64,{thumb_b64}" style="width:100%;display:block;">'
+                    img = f'<img src="data:image/jpeg;base64,{thumb_b64}" style="width:100%;display:block;">'
                 elif series.is_derived:
                     img = f'<div style="height:84px;background:linear-gradient(135deg,#efe5fb 0%,#e7f0ff 100%);color:#7b2ca6;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;letter-spacing:0.03em;">{series.modality}</div>'
                 elif series.error:

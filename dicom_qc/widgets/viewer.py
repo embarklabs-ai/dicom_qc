@@ -193,7 +193,7 @@ class InteractiveViewer:
 
         # Image widget (updates in-place without flicker)
         self.image_widget = widgets.Image(
-            format='png',
+            format='jpeg',
             layout=widgets.Layout(width='500px', height='500px')
         )
 
@@ -373,9 +373,16 @@ class InteractiveViewer:
             # Just update the image data
             self._im.set_array(windowed)
 
-        # Render figure to PNG bytes and update image widget
+        # Render figure to JPEG bytes and update image widget
         buf = BytesIO()
-        self._fig.savefig(buf, format='png', facecolor='black', bbox_inches='tight', pad_inches=0.1)
+        self._fig.savefig(
+            buf,
+            format='jpeg',
+            facecolor='black',
+            bbox_inches='tight',
+            pad_inches=0.1,
+            pil_kwargs={'quality': 90}
+        )
         buf.seek(0)
         self.image_widget.value = buf.read()
 

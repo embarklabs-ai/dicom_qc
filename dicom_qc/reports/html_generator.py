@@ -56,10 +56,10 @@ FALLBACK_TEMPLATE = '''
         </div>
         <div class="scan-content">
             <div class="image-grid">
-                {% if scan.axial_image %}<div class="image-container"><img src="data:image/png;base64,{{ scan.axial_image }}"><p>Axial</p></div>{% endif %}
-                {% if scan.coronal_image %}<div class="image-container"><img src="data:image/png;base64,{{ scan.coronal_image }}"><p>Coronal</p></div>{% endif %}
-                {% if scan.sagittal_image %}<div class="image-container"><img src="data:image/png;base64,{{ scan.sagittal_image }}"><p>Sagittal</p></div>{% endif %}
-                {% if scan.mip_image %}<div class="image-container"><img src="data:image/png;base64,{{ scan.mip_image }}"><p>MIP</p></div>{% endif %}
+                {% if scan.axial_image %}<div class="image-container"><img src="data:image/jpeg;base64,{{ scan.axial_image }}"><p>Axial</p></div>{% endif %}
+                {% if scan.coronal_image %}<div class="image-container"><img src="data:image/jpeg;base64,{{ scan.coronal_image }}"><p>Coronal</p></div>{% endif %}
+                {% if scan.sagittal_image %}<div class="image-container"><img src="data:image/jpeg;base64,{{ scan.sagittal_image }}"><p>Sagittal</p></div>{% endif %}
+                {% if scan.mip_image %}<div class="image-container"><img src="data:image/jpeg;base64,{{ scan.mip_image }}"><p>MIP</p></div>{% endif %}
             </div>
             {% if scan.animation_gif %}<div style="text-align:center;margin:20px 0;"><img src="data:image/gif;base64,{{ scan.animation_gif }}" style="max-width:500px;"></div>{% endif %}
             {% if scan.ohif_url %}<a href="{{ scan.ohif_url }}" target="_blank" style="display:inline-block;padding:10px 20px;background:#007bff;color:white;text-decoration:none;border-radius:4px;">View in OHIF</a>{% endif %}

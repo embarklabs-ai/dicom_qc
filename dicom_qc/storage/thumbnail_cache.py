@@ -6,7 +6,6 @@ This reduces memory usage from ~1-5GB to ~50MB for 100K series.
 
 import base64
 import hashlib
-from io import BytesIO
 from pathlib import Path
 from typing import Optional, Set
 
@@ -41,7 +40,7 @@ class ThumbnailCache:
 
     Example:
         cache = ThumbnailCache(Path("/data/_dicom_qc/thumbnails"))
-        path = cache.save_thumbnail_from_base64("1.2.3.4.5", png_base64)
+        path = cache.save_jpeg_thumbnail_from_base64("1.2.3.4.5", jpeg_base64)
         jpg_base64 = cache.get_thumbnail_base64(path)
     """
 
@@ -147,25 +146,26 @@ class ThumbnailCache:
         path.write_bytes(image_data)
         return self.get_relative_path(series_uid)
 
-    def save_thumbnail_from_base64(
+    @staticmethod
+    def _looks_like_jpeg(data: bytes) -> bool:
+        """Return True for byte payloads that look like complete JPEG files."""
+        return len(data) >= 4 and data[:2] == b'\xff\xd8' and b'\xff\xd9' in data[-16:]
+
+    def save_jpeg_thumbnail_from_base64(
         self,
         series_uid: str,
         base64_data: str,
-        convert_png_to_jpeg: bool = True,
-        jpeg_quality: int = 85,
-    ) -> str:
-        """Save thumbnail from base64 string, converting PNG to JPEG.
+    ) -> Optional[str]:
+        """Save thumbnail from base64 string (JPEG only).
 
         Used for migrating existing base64 thumbnails to disk.
 
         Args:
             series_uid: DICOM SeriesInstanceUID
-            base64_data: Base64-encoded image (PNG or JPEG)
-            convert_png_to_jpeg: If True, convert PNG to JPEG
-            jpeg_quality: JPEG quality (1-100)
+            base64_data: Base64-encoded JPEG image
 
         Returns:
-            Relative path for database storage.
+            Relative JPEG path for database storage, or None if invalid/unsupported.
         """
         try:
             raw_data = base64.b64decode(base64_data)
@@ -173,41 +173,8 @@ class ThumbnailCache:
             # Invalid base64 - skip
             return None
 
-        # Check if it's PNG (starts with PNG magic bytes)
-        is_png = raw_data[:8] == b'\x89PNG\r\n\x1a\n'
-
-        if is_png and convert_png_to_jpeg:
-            try:
-                from PIL import Image
-                img = Image.open(BytesIO(raw_data))
-                # Convert to RGB (JPEG doesn't support alpha)
-                if img.mode in ('RGBA', 'LA', 'P'):
-                    # Create black background for transparency
-                    background = Image.new('RGB', img.size, (0, 0, 0))
-                    if img.mode == 'P':
-                        img = img.convert('RGBA')
-                    background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
-                    img = background
-                elif img.mode != 'RGB':
-                    img = img.convert('RGB')
-
-                buf = BytesIO()
-                img.save(buf, format='JPEG', quality=jpeg_quality)
-                raw_data = buf.getvalue()
-            except ImportError:
-                # PIL not available - save PNG with correct extension
-                path = self.get_path_for_series(series_uid).with_suffix('.png')
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(raw_data)
-                thumb_hash = hashlib.sha256(series_uid.encode()).hexdigest()[:16]
-                return f"{thumb_hash[:2]}/{thumb_hash}.png"
-            except Exception:
-                # Conversion failed - save PNG with correct extension
-                path = self.get_path_for_series(series_uid).with_suffix('.png')
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(raw_data)
-                thumb_hash = hashlib.sha256(series_uid.encode()).hexdigest()[:16]
-                return f"{thumb_hash[:2]}/{thumb_hash}.png"
+        if not self._looks_like_jpeg(raw_data):
+            return None
 
         return self.save_thumbnail(series_uid, raw_data)
 
@@ -273,11 +240,6 @@ class ThumbnailCache:
                     if rel_path not in valid_paths:
                         thumb.unlink()
                         removed += 1
-                for thumb in subdir.rglob('*.png'):
-                    rel_path = str(thumb.relative_to(self.cache_dir))
-                    if rel_path not in valid_paths:
-                        thumb.unlink()
-                        removed += 1
                 # Remove empty directories bottom-up
                 for dirpath in sorted(subdir.rglob('*'), reverse=True):
                     if dirpath.is_dir():
@@ -302,7 +264,4 @@ class ThumbnailCache:
             if subdir.is_dir():
                 for thumb in subdir.rglob('*.jpg'):
                     paths.add(str(thumb.relative_to(self.cache_dir)))
-                for thumb in subdir.rglob('*.png'):
-                    paths.add(str(thumb.relative_to(self.cache_dir)))
         return paths
-

@@ -1,4 +1,4 @@
-"""Generate static PNG snapshots for QC review."""
+"""Generate static JPEG snapshots for QC review."""
 
 from io import BytesIO
 import base64
@@ -12,7 +12,7 @@ from dicom_qc.visualization.base import VolumeRenderer
 
 
 class SnapshotGenerator(VolumeRenderer):
-    """Generate static PNG snapshots for QC review."""
+    """Generate static JPEG snapshots for QC review."""
 
     def get_center_slices(self) -> Dict[str, np.ndarray]:
         """
@@ -167,7 +167,7 @@ class SnapshotGenerator(VolumeRenderer):
 
         return fig
 
-    def to_base64(self, fig: Figure, format: str = 'png') -> str:
+    def to_base64(self, fig: Figure, format: str = 'jpeg') -> str:
         """Convert matplotlib figure to base64 encoded string."""
         buffer = BytesIO()
         fig.savefig(
@@ -225,6 +225,7 @@ class SnapshotGenerator(VolumeRenderer):
         self,
         figsize: Tuple[float, float] = (4.5, 1.5),
         dpi: int = 75,
+        quality: int = 85,
         show_labels: bool = True
     ) -> str:
         """Create a compact 3-pane thumbnail (axial, coronal, sagittal) as base64.
@@ -232,10 +233,11 @@ class SnapshotGenerator(VolumeRenderer):
         Args:
             figsize: Figure size in inches (width, height)
             dpi: Resolution
+            quality: JPEG quality (1-100)
             show_labels: Whether to show A/C/S labels
 
         Returns:
-            Base64 encoded PNG string
+            Base64 encoded JPEG string
         """
         was_interactive = plt.isinteractive()
         plt.ioff()
@@ -243,7 +245,14 @@ class SnapshotGenerator(VolumeRenderer):
         fig = self._create_tripane_figure(figsize, dpi, show_labels)
 
         buf = BytesIO()
-        fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.02, facecolor='black')
+        fig.savefig(
+            buf,
+            format='jpeg',
+            bbox_inches='tight',
+            pad_inches=0.02,
+            facecolor='black',
+            pil_kwargs={'quality': quality}
+        )
         plt.close(fig)
         buf.seek(0)
 

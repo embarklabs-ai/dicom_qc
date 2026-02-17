@@ -435,7 +435,7 @@ class QuickCheckHTMLMixin:
 
         # Get thumbnail - check disk first, then base64 in memory
         thumb_b64 = None
-        mime = 'image/png'
+        mime = 'image/jpeg'
         if hasattr(series, '_thumbnail_path') and series._thumbnail_path and self.data_dir:
             thumb_path = self.data_dir / '_dicom_qc' / 'thumbnails' / series._thumbnail_path
             if thumb_path.exists():
@@ -444,7 +444,7 @@ class QuickCheckHTMLMixin:
                 mime = 'image/jpeg'
         if not thumb_b64 and series.thumbnail:
             thumb_b64 = series.thumbnail
-            mime = 'image/png'
+            mime = 'image/jpeg'
 
         if thumb_b64:
             img_src = f'data:{mime};base64,{thumb_b64}'

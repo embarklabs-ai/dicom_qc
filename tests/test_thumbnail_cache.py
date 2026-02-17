@@ -3,7 +3,6 @@
 import base64
 import hashlib
 from io import BytesIO
-from unittest.mock import patch
 
 import pytest
 
@@ -16,19 +15,19 @@ def cache(tmp_path) -> ThumbnailCache:
     return ThumbnailCache(tmp_path / "thumbnails")
 
 
-def _make_png_bytes() -> bytes:
-    """Create a minimal valid 1x1 red PNG using PIL."""
+def _hash_prefix(series_uid: str) -> str:
+    """Return the 16-char sha256 hex prefix used for path hashing."""
+    return hashlib.sha256(series_uid.encode()).hexdigest()[:16]
+
+
+def _make_jpeg_bytes() -> bytes:
+    """Create a minimal valid 1x1 JPEG image using PIL."""
     from PIL import Image
 
     img = Image.new("RGB", (1, 1), (255, 0, 0))
     buf = BytesIO()
-    img.save(buf, format="PNG")
+    img.save(buf, format="JPEG")
     return buf.getvalue()
-
-
-def _hash_prefix(series_uid: str) -> str:
-    """Return the 16-char sha256 hex prefix used for path hashing."""
-    return hashlib.sha256(series_uid.encode()).hexdigest()[:16]
 
 
 class TestSaveThumbnail:
@@ -66,61 +65,47 @@ class TestSaveThumbnail:
 
 
 class TestSaveThumbnailFromBase64:
-    """Tests for save_thumbnail_from_base64 with PNG-to-JPEG conversion."""
-
-    def test_png_converted_to_jpeg(self, cache):
-        """Valid PNG is converted to JPEG when PIL is available."""
-        uid = "1.2.840.10008.1"
-        png_bytes = _make_png_bytes()
-        b64_data = base64.b64encode(png_bytes).decode()
-
-        rel_path = cache.save_thumbnail_from_base64(uid, b64_data)
-
-        assert rel_path.endswith(".jpg")
-        saved_bytes = cache.get_thumbnail_bytes(rel_path)
-        # JPEG files start with FF D8
-        assert saved_bytes[:2] == b"\xff\xd8"
+    """Tests for save_jpeg_thumbnail_from_base64 (JPEG-only)."""
 
     def test_jpeg_passthrough(self, cache):
         """JPEG input is saved without conversion."""
         uid = "1.2.840.10008.2"
-        jpeg_bytes = b"\xff\xd8\xff\xe0some-jpeg-content"
+        jpeg_bytes = _make_jpeg_bytes()
         b64_data = base64.b64encode(jpeg_bytes).decode()
 
-        rel_path = cache.save_thumbnail_from_base64(uid, b64_data)
+        rel_path = cache.save_jpeg_thumbnail_from_base64(uid, b64_data)
 
         assert rel_path.endswith(".jpg")
         assert cache.get_thumbnail_bytes(rel_path) == jpeg_bytes
 
     def test_invalid_base64_returns_none(self, cache):
         """Invalid base64 input returns None."""
-        result = cache.save_thumbnail_from_base64("1.2.3", "!!!not-base64!!!")
+        result = cache.save_jpeg_thumbnail_from_base64("1.2.3", "!!!not-base64!!!")
         assert result is None
 
-    def test_fallback_when_pil_unavailable(self, cache):
-        """PNG saved with .png extension when PIL cannot be imported."""
+    def test_png_input_returns_none(self, cache):
+        """PNG input is rejected to keep cache JPEG-only."""
         uid = "1.2.840.10008.3"
-        png_bytes = _make_png_bytes()
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
         b64_data = base64.b64encode(png_bytes).decode()
+        rel_path = cache.save_jpeg_thumbnail_from_base64(uid, b64_data)
+        assert rel_path is None
 
-        with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
-            rel_path = cache.save_thumbnail_from_base64(uid, b64_data)
-
-        assert rel_path.endswith(".png")
-        saved_bytes = cache.get_thumbnail_bytes(rel_path)
-        assert saved_bytes == png_bytes
-
-    def test_fallback_when_conversion_fails(self, cache):
-        """Corrupt PNG saved with .png extension when conversion raises."""
+    def test_non_jpeg_input_returns_none(self, cache):
+        """Non-JPEG data is rejected even if base64 is valid."""
         uid = "1.2.840.10008.4"
-        # Valid PNG header but corrupt body -- PIL will fail to open
-        corrupt_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
-        b64_data = base64.b64encode(corrupt_png).decode()
+        gif_bytes = b"GIF89a" + b"\x00" * 24
+        b64_data = base64.b64encode(gif_bytes).decode()
+        rel_path = cache.save_jpeg_thumbnail_from_base64(uid, b64_data)
+        assert rel_path is None
 
-        rel_path = cache.save_thumbnail_from_base64(uid, b64_data)
-
-        assert rel_path.endswith(".png")
-        assert cache.get_thumbnail_bytes(rel_path) == corrupt_png
+    def test_malformed_soi_only_jpeg_returns_none(self, cache):
+        """SOI-only payload without EOI marker is rejected."""
+        uid = "1.2.840.10008.5"
+        malformed = b"\xff\xd8\xff\xe0not-a-complete-jpeg"
+        b64_data = base64.b64encode(malformed).decode()
+        rel_path = cache.save_jpeg_thumbnail_from_base64(uid, b64_data)
+        assert rel_path is None
 
 
 class TestGetThumbnailBase64:
@@ -245,17 +230,6 @@ class TestGetAllPaths:
         all_paths = cache.get_all_paths()
 
         assert xnat_rel in all_paths
-
-    def test_finds_png_files(self, cache):
-        """PNG files created by fallback conversion are included."""
-        uid = "1.2.840.10008.99"
-        corrupt_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
-        b64_data = base64.b64encode(corrupt_png).decode()
-
-        rel_path = cache.save_thumbnail_from_base64(uid, b64_data)
-        all_paths = cache.get_all_paths()
-
-        assert rel_path in all_paths
 
     def test_finds_both_types_together(self, cache):
         """Hash-based and XNAT-style paths are returned together."""

@@ -434,9 +434,16 @@ class MultiViewViewer(VolumeRenderer):
 
         fig.tight_layout(pad=1.0)
 
-        # Render to PNG
+        # Render to JPEG
         buf = BytesIO()
-        fig.savefig(buf, format='png', facecolor='black', bbox_inches='tight', dpi=100)
+        fig.savefig(
+            buf,
+            format='jpeg',
+            facecolor='black',
+            bbox_inches='tight',
+            dpi=100,
+            pil_kwargs={'quality': 90}
+        )
         buf.seek(0)
         plt.close(fig)
 
@@ -454,7 +461,7 @@ class MultiViewViewer(VolumeRenderer):
             self._update_info()
 
         elif not self._interactive:
-            # Static mode - render to PNG in Output widget
+            # Static mode - render to JPEG in Output widget
             import base64
             from IPython.display import HTML
             static_data = self._render_static_preview()
@@ -462,7 +469,7 @@ class MultiViewViewer(VolumeRenderer):
 
             with self.figure_output:
                 clear_output(wait=True)
-                display(HTML(f'<img src="data:image/png;base64,{b64_data}" style="display:block;">'))
+                display(HTML(f'<img src="data:image/jpeg;base64,{b64_data}" style="display:block;">'))
 
             self._update_info()
 

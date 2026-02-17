@@ -1708,7 +1708,7 @@ class QuickCheckDisplayMixin:
                         continue
 
                     if series.thumbnail:
-                        img_src = f'data:image/png;base64,{series.thumbnail}'
+                        img_src = f'data:image/jpeg;base64,{series.thumbnail}'
                     else:
                         img_src = ('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="340" height="113">'
                                    '<rect fill="%23333" width="340" height="113"/>'
