@@ -19,8 +19,8 @@ def axial_volume() -> DicomVolume:
     )
     return DicomVolume(
         sitk_image=image,
-        modality='MR',
-        series_description='T1 MPRAGE',
+        modality="MR",
+        series_description="T1 MPRAGE",
     )
 
 
@@ -38,8 +38,8 @@ def coronal_volume() -> DicomVolume:
     )
     return DicomVolume(
         sitk_image=image,
-        modality='MR',
-        series_description='Coronal T2',
+        modality="MR",
+        series_description="Coronal T2",
     )
 
 
@@ -58,8 +58,8 @@ def sagittal_volume() -> DicomVolume:
     )
     return DicomVolume(
         sitk_image=image,
-        modality='MR',
-        series_description='Sagittal FLAIR',
+        modality="MR",
+        series_description="Sagittal FLAIR",
     )
 
 
@@ -79,8 +79,8 @@ def oblique_volume() -> DicomVolume:
     )
     return DicomVolume(
         sitk_image=image,
-        modality='MR',
-        series_description='Oblique',
+        modality="MR",
+        series_description="Oblique",
     )
 
 
@@ -94,8 +94,8 @@ def single_slice_volume() -> DicomVolume:
     )
     return DicomVolume(
         sitk_image=image,
-        modality='MR',
-        series_description='Single slice',
+        modality="MR",
+        series_description="Single slice",
     )
 
 
@@ -109,8 +109,8 @@ def anisotropic_volume() -> DicomVolume:
     )
     return DicomVolume(
         sitk_image=image,
-        modality='MR',
-        series_description='Thick slices',
+        modality="MR",
+        series_description="Thick slices",
     )
 
 
@@ -124,8 +124,8 @@ def isotropic_volume() -> DicomVolume:
     )
     return DicomVolume(
         sitk_image=image,
-        modality='MR',
-        series_description='Isotropic',
+        modality="MR",
+        series_description="Isotropic",
     )
 
 
@@ -144,8 +144,8 @@ def ct_volume() -> DicomVolume:
 
     return DicomVolume(
         sitk_image=image,
-        modality='CT',
-        series_description='CT Chest',
+        modality="CT",
+        series_description="CT Chest",
     )
 
 
@@ -159,8 +159,8 @@ def volume_4d() -> DicomVolume:
     )
     return DicomVolume(
         sitk_image=image,
-        modality='MR',
-        series_description='fMRI BOLD',
+        modality="MR",
+        series_description="fMRI BOLD",
         num_timepoints=100,  # 4D data with 100 timepoints
     )
 
@@ -176,8 +176,8 @@ def localizer_volume() -> DicomVolume:
     )
     return DicomVolume(
         sitk_image=image,
-        modality='MR',
-        series_description='Localizer',
+        modality="MR",
+        series_description="Localizer",
         num_orientations=3,  # Multi-orientation
     )
 
@@ -191,9 +191,9 @@ def missing_geometry_volume() -> DicomVolume:
     )
     return DicomVolume(
         sitk_image=image,
-        modality='MR',
-        series_description='Derived ADC',
-        missing_geometry_tags=['PixelSpacing', 'ImageOrientationPatient'],
+        modality="MR",
+        series_description="Derived ADC",
+        missing_geometry_tags=["PixelSpacing", "ImageOrientationPatient"],
     )
 
 
@@ -206,8 +206,8 @@ def dti_volume() -> DicomVolume:
     )
     return DicomVolume(
         sitk_image=image,
-        modality='MR',
-        series_description='DTI_64dir_b1000',
+        modality="MR",
+        series_description="DTI_64dir_b1000",
         num_timepoints=65,
     )
 
@@ -221,7 +221,7 @@ def perfusion_volume() -> DicomVolume:
     )
     return DicomVolume(
         sitk_image=image,
-        modality='MR',
-        series_description='DSC Perfusion CBV',
+        modality="MR",
+        series_description="DSC Perfusion CBV",
         num_timepoints=60,
     )

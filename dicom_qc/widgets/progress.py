@@ -32,43 +32,41 @@ class ProgressTracker:
             value=0,
             min=0,
             max=len(self.scans),
-            description='Progress:',
-            bar_style='info',
-            layout=widgets.Layout(width='400px'),
-            style={'description_width': '70px'}
+            description="Progress:",
+            bar_style="info",
+            layout=widgets.Layout(width="400px"),
+            style={"description_width": "70px"},
         )
 
         # Status text
-        self.status_text = widgets.HTML(
-            value=self._get_status_html()
-        )
+        self.status_text = widgets.HTML(value=self._get_status_html())
 
         # Navigation buttons
         self.prev_button = widgets.Button(
-            description='Previous',
-            icon='arrow-left',
+            description="Previous",
+            icon="arrow-left",
             disabled=True,
-            layout=widgets.Layout(width='100px')
+            layout=widgets.Layout(width="100px"),
         )
 
         self.next_button = widgets.Button(
-            description='Next',
-            icon='arrow-right',
+            description="Next",
+            icon="arrow-right",
             disabled=len(self.scans) <= 1,
-            layout=widgets.Layout(width='100px')
+            layout=widgets.Layout(width="100px"),
         )
 
         # Jump dropdown
         scan_options = [
-            (f"{i+1}. {s.id} - {s.description[:30]}", i)
+            (f"{i + 1}. {s.id} - {s.description[:30]}", i)
             for i, s in enumerate(self.scans)
         ]
         self.jump_dropdown = widgets.Dropdown(
             options=scan_options,
             value=0,
-            description='Jump to:',
-            layout=widgets.Layout(width='300px'),
-            style={'description_width': '60px'}
+            description="Jump to:",
+            layout=widgets.Layout(width="300px"),
+            style={"description_width": "60px"},
         )
 
         # Summary table
@@ -78,28 +76,29 @@ class ProgressTracker:
         """Set up widget handlers."""
         self.prev_button.on_click(self._go_previous)
         self.next_button.on_click(self._go_next)
-        self.jump_dropdown.observe(self._on_jump, names='value')
+        self.jump_dropdown.observe(self._on_jump, names="value")
 
     def display(self):
         """Display the progress tracker."""
         header = widgets.HTML('<h3 style="margin-bottom: 10px;">Review Progress</h3>')
 
-        nav_buttons = widgets.HBox([
-            self.prev_button,
-            self.next_button,
-            self.jump_dropdown
-        ])
+        nav_buttons = widgets.HBox(
+            [self.prev_button, self.next_button, self.jump_dropdown]
+        )
 
         summary_header = widgets.HTML('<h4 style="margin-top: 15px;">Summary</h4>')
 
-        container = widgets.VBox([
-            header,
-            self.progress_bar,
-            self.status_text,
-            nav_buttons,
-            summary_header,
-            self.summary_output
-        ], layout=widgets.Layout(padding='10px'))
+        container = widgets.VBox(
+            [
+                header,
+                self.progress_bar,
+                self.status_text,
+                nav_buttons,
+                summary_header,
+                self.summary_output,
+            ],
+            layout=widgets.Layout(padding="10px"),
+        )
 
         display(container)
         self._update_summary()
@@ -126,20 +125,20 @@ class ProgressTracker:
         total = len(self.scans)
 
         # Count by status
-        passed = sum(1 for r in self.results.values() if r.get('decision') == 'PASS')
-        failed = sum(1 for r in self.results.values() if r.get('decision') == 'FAIL')
-        flagged = sum(1 for r in self.results.values() if r.get('decision') == 'FLAG')
-        skipped = sum(1 for r in self.results.values() if r.get('decision') == 'SKIP')
+        passed = sum(1 for r in self.results.values() if r.get("decision") == "PASS")
+        failed = sum(1 for r in self.results.values() if r.get("decision") == "FAIL")
+        flagged = sum(1 for r in self.results.values() if r.get("decision") == "FLAG")
+        skipped = sum(1 for r in self.results.values() if r.get("decision") == "SKIP")
 
-        return f'''
+        return f"""
             <div style="margin: 5px 0;">
                 {reviewed} / {total} scans reviewed |
                 <span style="color:green;">PASS: {passed}</span> |
                 <span style="color:red;">FAIL: {failed}</span> |
                 <span style="color:orange;">FLAG: {flagged}</span>
-                {f'| <span style="color:gray;">SKIP: {skipped}</span>' if skipped else ''}
+                {f'| <span style="color:gray;">SKIP: {skipped}</span>' if skipped else ""}
             </div>
-        '''
+        """
 
     def _update_progress(self):
         """Update progress bar and status."""
@@ -151,33 +150,34 @@ class ProgressTracker:
         """Update summary table."""
         with self.summary_output:
             from IPython.display import clear_output
+
             clear_output()
 
             rows = []
             for i, scan in enumerate(self.scans):
                 result = self.results.get(scan.id, {})
-                decision = result.get('decision', 'Pending')
+                decision = result.get("decision", "Pending")
 
                 color = {
-                    'PASS': 'green',
-                    'FAIL': 'red',
-                    'FLAG': 'orange',
-                    'SKIP': 'gray',
-                    'Pending': '#999'
-                }.get(decision, 'black')
+                    "PASS": "green",
+                    "FAIL": "red",
+                    "FLAG": "orange",
+                    "SKIP": "gray",
+                    "Pending": "#999",
+                }.get(decision, "black")
 
                 icon = {
-                    'PASS': '&#10003;',
-                    'FAIL': '&#10007;',
-                    'FLAG': '&#9873;',
-                    'SKIP': '&#8594;',
-                    'Pending': '&#8226;'
-                }.get(decision, '')
+                    "PASS": "&#10003;",
+                    "FAIL": "&#10007;",
+                    "FLAG": "&#9873;",
+                    "SKIP": "&#8594;",
+                    "Pending": "&#8226;",
+                }.get(decision, "")
 
                 # Highlight current row
-                bg_color = '#e3f2fd' if i == self.current_index else 'transparent'
+                bg_color = "#e3f2fd" if i == self.current_index else "transparent"
 
-                rows.append(f'''
+                rows.append(f"""
                     <tr style="background:{bg_color};">
                         <td style="padding:5px; text-align:center;">{i + 1}</td>
                         <td style="padding:5px;">{scan.id}</td>
@@ -186,9 +186,9 @@ class ProgressTracker:
                             {icon} {decision}
                         </td>
                     </tr>
-                ''')
+                """)
 
-            table_html = f'''
+            table_html = f"""
                 <div style="max-height:300px; overflow-y:auto;">
                 <table style="width:100%; border-collapse:collapse; font-size:0.9em;">
                     <thead>
@@ -200,11 +200,11 @@ class ProgressTracker:
                         </tr>
                     </thead>
                     <tbody>
-                        {''.join(rows)}
+                        {"".join(rows)}
                     </tbody>
                 </table>
                 </div>
-            '''
+            """
 
             display(IPHTML(table_html))
 
@@ -224,7 +224,7 @@ class ProgressTracker:
 
     def _on_jump(self, change):
         """Handle jump to specific scan."""
-        new_index = change['new']
+        new_index = change["new"]
         if new_index != self.current_index:
             self.current_index = new_index
             self._navigate()
@@ -266,14 +266,24 @@ class ProgressTracker:
         reviewed = len(self.results)
 
         return {
-            'total': total,
-            'reviewed': reviewed,
-            'pending': total - reviewed,
-            'passed': sum(1 for r in self.results.values() if r.get('decision') == 'PASS'),
-            'failed': sum(1 for r in self.results.values() if r.get('decision') == 'FAIL'),
-            'flagged': sum(1 for r in self.results.values() if r.get('decision') == 'FLAG'),
-            'skipped': sum(1 for r in self.results.values() if r.get('decision') == 'SKIP'),
-            'pass_rate': None if reviewed == 0 else sum(
-                1 for r in self.results.values() if r.get('decision') == 'PASS'
-            ) / reviewed * 100,
+            "total": total,
+            "reviewed": reviewed,
+            "pending": total - reviewed,
+            "passed": sum(
+                1 for r in self.results.values() if r.get("decision") == "PASS"
+            ),
+            "failed": sum(
+                1 for r in self.results.values() if r.get("decision") == "FAIL"
+            ),
+            "flagged": sum(
+                1 for r in self.results.values() if r.get("decision") == "FLAG"
+            ),
+            "skipped": sum(
+                1 for r in self.results.values() if r.get("decision") == "SKIP"
+            ),
+            "pass_rate": None
+            if reviewed == 0
+            else sum(1 for r in self.results.values() if r.get("decision") == "PASS")
+            / reviewed
+            * 100,
         }

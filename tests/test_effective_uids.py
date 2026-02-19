@@ -1,6 +1,5 @@
 """Tests for QuickCheck._get_effective_uids."""
 
-
 from dicom_qc.quickcheck import QuickCheck, SeriesInfo, StudyInfo
 
 

@@ -13,6 +13,7 @@ from dicom_qc.storage.database import QCDatabase
 # Mock QC report objects (mimics QCResult / QCReport from core.geometry)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class MockQCResult:
     check_name: str
@@ -22,10 +23,10 @@ class MockQCResult:
 
     def to_dict(self):
         return {
-            'check_name': self.check_name,
-            'status': self.status,
-            'message': self.message,
-            'details': self.details,
+            "check_name": self.check_name,
+            "status": self.status,
+            "message": self.message,
+            "details": self.details,
         }
 
 
@@ -38,6 +39,7 @@ class MockQCReport:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def db(tmp_path):
     """Create a QCDatabase backed by a temporary file."""
@@ -46,13 +48,15 @@ def db(tmp_path):
     database.close()
 
 
-def _insert_full_hierarchy(db, patient_id="PAT001", study_uid="1.2.3",
-                           series_uid="1.2.3.4", **series_kwargs):
+def _insert_full_hierarchy(
+    db, patient_id="PAT001", study_uid="1.2.3", series_uid="1.2.3.4", **series_kwargs
+):
     """Helper: insert patient -> study -> series and return all three db IDs."""
     pid = db.insert_patient(patient_id)
     stid = db.insert_study(pid, study_uid)
-    defaults = dict(series_description="T1 MPRAGE", modality="MR",
-                    qc_status="PASS", file_count=100)
+    defaults = dict(
+        series_description="T1 MPRAGE", modality="MR", qc_status="PASS", file_count=100
+    )
     defaults.update(series_kwargs)
     sid = db.insert_series(stid, series_uid, **defaults)
     db.commit()
@@ -63,8 +67,8 @@ def _insert_full_hierarchy(db, patient_id="PAT001", study_uid="1.2.3",
 # 1. Schema creation and version
 # ---------------------------------------------------------------------------
 
-class TestSchemaCreation:
 
+class TestSchemaCreation:
     def test_schema_version_stored(self, db):
         version = db.get_session_value("schema_version")
         assert version == str(QCDatabase.SCHEMA_VERSION)
@@ -78,8 +82,14 @@ class TestSchemaCreation:
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
         tables = {row["name"] for row in cursor.fetchall()}
-        expected = {"patients", "studies", "series", "qc_results",
-                    "series_files", "qc_session"}
+        expected = {
+            "patients",
+            "studies",
+            "series",
+            "qc_results",
+            "series_files",
+            "qc_session",
+        }
         assert expected.issubset(tables)
 
 
@@ -87,8 +97,8 @@ class TestSchemaCreation:
 # 2. Insert patient / study / series round-trip
 # ---------------------------------------------------------------------------
 
-class TestInsertRoundTrip:
 
+class TestInsertRoundTrip:
     def test_insert_patient(self, db):
         pid = db.insert_patient("PAT001", "John Doe", "XNAT_S001")
         assert isinstance(pid, int)
@@ -102,29 +112,49 @@ class TestInsertRoundTrip:
 
     def test_insert_study(self, db):
         pid = db.insert_patient("PAT001")
-        stid = db.insert_study(pid, "1.2.3", study_date="20240101",
-                               study_description="Brain MRI",
-                               xnat_session_label="MR001")
+        stid = db.insert_study(
+            pid,
+            "1.2.3",
+            study_date="20240101",
+            study_description="Brain MRI",
+            xnat_session_label="MR001",
+        )
         assert isinstance(stid, int)
 
     def test_insert_series(self, db):
         pid = db.insert_patient("PAT001")
         stid = db.insert_study(pid, "1.2.3")
-        sid = db.insert_series(stid, "1.2.3.4", series_number=5,
-                               series_description="T1 MPRAGE", modality="MR",
-                               qc_status="PASS", file_count=180)
+        sid = db.insert_series(
+            stid,
+            "1.2.3.4",
+            series_number=5,
+            series_description="T1 MPRAGE",
+            modality="MR",
+            qc_status="PASS",
+            file_count=180,
+        )
         assert isinstance(sid, int)
 
     def test_full_hierarchy_round_trip(self, db):
         """Insert full hierarchy and retrieve via get_filtered_series."""
         pid = db.insert_patient("PAT001", "John Doe", "XNAT_S001")
-        stid = db.insert_study(pid, "1.2.3", study_date="20240115",
-                               study_description="Brain MRI",
-                               xnat_session_label="Session1")
-        sid = db.insert_series(stid, "1.2.3.4", series_number=3,
-                               series_description="T1 MPRAGE", modality="MR",
-                               qc_status="PASS", file_count=192,
-                               thumbnail_path="ab/abc123.jpg")
+        stid = db.insert_study(
+            pid,
+            "1.2.3",
+            study_date="20240115",
+            study_description="Brain MRI",
+            xnat_session_label="Session1",
+        )
+        sid = db.insert_series(
+            stid,
+            "1.2.3.4",
+            series_number=3,
+            series_description="T1 MPRAGE",
+            modality="MR",
+            qc_status="PASS",
+            file_count=192,
+            thumbnail_path="ab/abc123.jpg",
+        )
         db.commit()
 
         rows = db.get_filtered_series()
@@ -159,14 +189,19 @@ class TestInsertRoundTrip:
 # 3. QC results from report
 # ---------------------------------------------------------------------------
 
-class TestQCResults:
 
+class TestQCResults:
     def test_insert_and_retrieve_qc_results(self, db):
         _, _, sid = _insert_full_hierarchy(db)
 
         db.insert_qc_result(sid, "Slice Ordering", "PASS", "Monotonic")
-        db.insert_qc_result(sid, "Gap Detection", "WARNING", "Irregular spacing",
-                            details={"max_gap_mm": 4.5})
+        db.insert_qc_result(
+            sid,
+            "Gap Detection",
+            "WARNING",
+            "Irregular spacing",
+            details={"max_gap_mm": 4.5},
+        )
         db.commit()
 
         results = db.get_qc_results(sid)
@@ -178,12 +213,15 @@ class TestQCResults:
     def test_insert_qc_results_from_report(self, db):
         _, _, sid = _insert_full_hierarchy(db)
 
-        report = MockQCReport(results=[
-            MockQCResult("Geometry Metadata", "PASS", "All tags present"),
-            MockQCResult("Voxel Anisotropy", "WARNING", "3x ratio",
-                         details={"ratio": 3.0}),
-            MockQCResult("Gap Detection", "FAIL", "Missing slices"),
-        ])
+        report = MockQCReport(
+            results=[
+                MockQCResult("Geometry Metadata", "PASS", "All tags present"),
+                MockQCResult(
+                    "Voxel Anisotropy", "WARNING", "3x ratio", details={"ratio": 3.0}
+                ),
+                MockQCResult("Gap Detection", "FAIL", "Missing slices"),
+            ]
+        )
 
         db.insert_qc_results_from_report(sid, report)
         db.commit()
@@ -199,17 +237,21 @@ class TestQCResults:
         """Calling insert_qc_results_from_report clears previous results."""
         _, _, sid = _insert_full_hierarchy(db)
 
-        report_v1 = MockQCReport(results=[
-            MockQCResult("Check A", "PASS", "OK"),
-            MockQCResult("Check B", "PASS", "OK"),
-        ])
+        report_v1 = MockQCReport(
+            results=[
+                MockQCResult("Check A", "PASS", "OK"),
+                MockQCResult("Check B", "PASS", "OK"),
+            ]
+        )
         db.insert_qc_results_from_report(sid, report_v1)
         db.commit()
         assert len(db.get_qc_results(sid)) == 2
 
-        report_v2 = MockQCReport(results=[
-            MockQCResult("Check C", "FAIL", "Bad"),
-        ])
+        report_v2 = MockQCReport(
+            results=[
+                MockQCResult("Check C", "FAIL", "Bad"),
+            ]
+        )
         db.insert_qc_results_from_report(sid, report_v2)
         db.commit()
 
@@ -222,32 +264,54 @@ class TestQCResults:
 # 4-5. Filtered series queries and order_by validation
 # ---------------------------------------------------------------------------
 
-class TestFilteredSeries:
 
+class TestFilteredSeries:
     @pytest.fixture(autouse=True)
     def _populate(self, db):
         """Populate db with a variety of series for filtering tests."""
         # Patient 1, Study A
         p1 = db.insert_patient("PAT001", "Alice")
-        s1 = db.insert_study(p1, "1.2.1", study_date="20240101",
-                             xnat_session_label="SessionA")
-        db.insert_series(s1, "1.2.1.1", series_number=1,
-                         series_description="T1 MPRAGE", modality="MR",
-                         qc_status="PASS")
-        db.insert_series(s1, "1.2.1.2", series_number=2,
-                         series_description="T2 FLAIR", modality="MR",
-                         qc_status="FAIL")
+        s1 = db.insert_study(
+            p1, "1.2.1", study_date="20240101", xnat_session_label="SessionA"
+        )
+        db.insert_series(
+            s1,
+            "1.2.1.1",
+            series_number=1,
+            series_description="T1 MPRAGE",
+            modality="MR",
+            qc_status="PASS",
+        )
+        db.insert_series(
+            s1,
+            "1.2.1.2",
+            series_number=2,
+            series_description="T2 FLAIR",
+            modality="MR",
+            qc_status="FAIL",
+        )
 
         # Patient 2, Study B
         p2 = db.insert_patient("PAT002", "Bob")
-        s2 = db.insert_study(p2, "1.2.2", study_date="20240201",
-                             xnat_session_label="SessionB")
-        db.insert_series(s2, "1.2.2.1", series_number=1,
-                         series_description="CT Head", modality="CT",
-                         qc_status="PASS")
-        db.insert_series(s2, "1.2.2.2", series_number=3,
-                         series_description="DWI b1000", modality="MR",
-                         qc_status="WARNING")
+        s2 = db.insert_study(
+            p2, "1.2.2", study_date="20240201", xnat_session_label="SessionB"
+        )
+        db.insert_series(
+            s2,
+            "1.2.2.1",
+            series_number=1,
+            series_description="CT Head",
+            modality="CT",
+            qc_status="PASS",
+        )
+        db.insert_series(
+            s2,
+            "1.2.2.2",
+            series_number=3,
+            series_description="DWI b1000",
+            modality="MR",
+            qc_status="WARNING",
+        )
 
         db.commit()
 
@@ -323,8 +387,8 @@ class TestFilteredSeries:
 # 6-7. Delete orphan series
 # ---------------------------------------------------------------------------
 
-class TestDeleteOrphanSeries:
 
+class TestDeleteOrphanSeries:
     def test_delete_orphans_removes_unlisted(self, db):
         _, _, sid1 = _insert_full_hierarchy(db, "PAT001", "1.2.1", "1.2.1.1")
         _, _, sid2 = _insert_full_hierarchy(db, "PAT002", "1.2.2", "1.2.2.1")
@@ -351,11 +415,17 @@ class TestDeleteOrphanSeries:
 
     def test_delete_orphans_returns_thumbnail_paths(self, db):
         _, _, sid1 = _insert_full_hierarchy(
-            db, "PAT001", "1.2.1", "1.2.1.1",
+            db,
+            "PAT001",
+            "1.2.1",
+            "1.2.1.1",
             thumbnail_path="ab/abc123.jpg",
         )
         _, _, sid2 = _insert_full_hierarchy(
-            db, "PAT002", "1.2.2", "1.2.2.1",
+            db,
+            "PAT002",
+            "1.2.2",
+            "1.2.2.1",
             thumbnail_path="cd/cde456.jpg",
         )
 
@@ -382,16 +452,21 @@ class TestDeleteOrphanSeries:
 # 8. Pagination (limit / offset)
 # ---------------------------------------------------------------------------
 
-class TestPagination:
 
+class TestPagination:
     @pytest.fixture(autouse=True)
     def _populate(self, db):
         pid = db.insert_patient("PAT001")
         stid = db.insert_study(pid, "1.2.3")
         for i in range(10):
-            db.insert_series(stid, f"1.2.3.{i}", series_number=i,
-                             series_description=f"Series {i:02d}", modality="MR",
-                             qc_status="PASS")
+            db.insert_series(
+                stid,
+                f"1.2.3.{i}",
+                series_number=i,
+                series_description=f"Series {i:02d}",
+                modality="MR",
+                qc_status="PASS",
+            )
         db.commit()
 
     def test_limit(self, db):
@@ -426,8 +501,8 @@ class TestPagination:
 # 9. Thread safety (concurrent writes)
 # ---------------------------------------------------------------------------
 
-class TestThreadSafety:
 
+class TestThreadSafety:
     def test_concurrent_inserts(self, tmp_path):
         """Multiple threads can insert without corruption."""
         db = QCDatabase(tmp_path / "thread_test.db")
@@ -439,8 +514,9 @@ class TestThreadSafety:
                 patient_id = f"W{worker_id}_P{i}"
                 pid = db.insert_patient(patient_id)
                 stid = db.insert_study(pid, f"study_{worker_id}_{i}")
-                db.insert_series(stid, f"series_{worker_id}_{i}",
-                                 qc_status="PASS", modality="MR")
+                db.insert_series(
+                    stid, f"series_{worker_id}_{i}", qc_status="PASS", modality="MR"
+                )
 
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = [executor.submit(worker, w) for w in range(num_workers)]

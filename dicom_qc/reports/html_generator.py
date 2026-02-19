@@ -12,7 +12,7 @@ from dicom_qc.visualization.animations import AnimationGenerator
 
 
 # Inline template as fallback if file not found
-FALLBACK_TEMPLATE = '''
+FALLBACK_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
@@ -68,7 +68,7 @@ FALLBACK_TEMPLATE = '''
     {% endfor %}
 </body>
 </html>
-'''
+"""
 
 
 class HTMLReportGenerator:
@@ -77,15 +77,14 @@ class HTMLReportGenerator:
     def __init__(self):
         """Initialize the report generator."""
         # Try to load template from file
-        template_dir = Path(__file__).parent / 'templates'
-        template_file = template_dir / 'report.html'
+        template_dir = Path(__file__).parent / "templates"
+        template_file = template_dir / "report.html"
 
         if template_file.exists():
             self.env = Environment(
-                loader=FileSystemLoader(str(template_dir)),
-                autoescape=True
+                loader=FileSystemLoader(str(template_dir)), autoescape=True
             )
-            self.template = self.env.get_template('report.html')
+            self.template = self.env.get_template("report.html")
         else:
             # Use fallback template
             self.env = Environment(loader=BaseLoader(), autoescape=True)
@@ -95,7 +94,7 @@ class HTMLReportGenerator:
         self,
         session_info: Dict[str, str],
         scan_results: List[Dict[str, Any]],
-        output_path: Optional[str] = None
+        output_path: Optional[str] = None,
     ) -> str:
         """
         Generate complete HTML QC report.
@@ -116,12 +115,12 @@ class HTMLReportGenerator:
             session_info=session_info,
             scan_results=scan_results,
             summary=summary,
-            generated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            report_version='1.0.0'
+            generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            report_version="1.0.0",
         )
 
         if output_path:
-            with open(output_path, 'w', encoding='utf-8') as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 f.write(html)
 
         return html
@@ -129,28 +128,26 @@ class HTMLReportGenerator:
     def _calculate_summary(self, scan_results: List[Dict]) -> Dict:
         """Calculate summary statistics."""
         total = len(scan_results)
-        passed = sum(1 for r in scan_results if r.get('decision') == 'PASS')
-        failed = sum(1 for r in scan_results if r.get('decision') == 'FAIL')
-        flagged = sum(1 for r in scan_results if r.get('decision') == 'FLAG')
-        skipped = sum(1 for r in scan_results if r.get('decision') == 'SKIP')
+        passed = sum(1 for r in scan_results if r.get("decision") == "PASS")
+        failed = sum(1 for r in scan_results if r.get("decision") == "FAIL")
+        flagged = sum(1 for r in scan_results if r.get("decision") == "FLAG")
+        skipped = sum(1 for r in scan_results if r.get("decision") == "SKIP")
 
         reviewed = passed + failed + flagged + skipped
         pass_rate = (passed / reviewed * 100) if reviewed > 0 else 0
 
         return {
-            'total': total,
-            'passed': passed,
-            'failed': failed,
-            'flagged': flagged,
-            'skipped': skipped,
-            'reviewed': reviewed,
-            'pass_rate': f'{pass_rate:.1f}'
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "flagged": flagged,
+            "skipped": skipped,
+            "reviewed": reviewed,
+            "pass_rate": f"{pass_rate:.1f}",
         }
 
     def generate_snapshots(
-        self,
-        volume: DicomVolume,
-        window: Optional[Tuple[float, float]] = None
+        self, volume: DicomVolume, window: Optional[Tuple[float, float]] = None
     ) -> Dict[str, str]:
         """
         Generate all snapshots for a volume using proper LPS orientation.
@@ -170,7 +167,7 @@ class HTMLReportGenerator:
         volume: DicomVolume,
         window: Optional[Tuple[float, float]] = None,
         use_acquisition_plane: bool = True,
-        fps: int = 10
+        fps: int = 10,
     ) -> Optional[str]:
         """
         Generate a slice animation for a volume.
@@ -189,7 +186,7 @@ class HTMLReportGenerator:
             if use_acquisition_plane:
                 gif_bytes = generator.create_acquisition_plane_animation(fps=fps)
             else:
-                gif_bytes = generator.create_slice_animation(view='axial', fps=fps)
+                gif_bytes = generator.create_slice_animation(view="axial", fps=fps)
 
             if gif_bytes:
                 return generator.to_base64(gif_bytes)
@@ -206,7 +203,7 @@ class HTMLReportGenerator:
         snapshots: Optional[Dict[str, str]] = None,
         animation_gif: Optional[str] = None,
         ohif_url: Optional[str] = None,
-        window: Optional[Tuple[float, float]] = None
+        window: Optional[Tuple[float, float]] = None,
     ) -> Dict[str, Any]:
         """
         Prepare a single scan result for the report.
@@ -233,22 +230,22 @@ class HTMLReportGenerator:
             animation_gif = self.generate_animation(volume, window=window)
 
         return {
-            'scan_id': scan_info.id,
-            'description': scan_info.description,
-            'modality': volume.modality,
-            'num_slices': volume.num_slices,
-            'pixel_spacing': volume.pixel_spacing,
-            'slice_thickness': volume.slice_thickness,
-            'decision': decision_data.get('decision', 'Pending'),
-            'notes': decision_data.get('notes', ''),
-            'issues': decision_data.get('issues', []),
-            'qc_checks': [r.to_dict() for r in qc_report.results],
-            'orientation_labels': qc_report.orientation_labels,
-            'primary_plane': qc_report.primary_plane,
-            'axial_image': snapshots.get('axial'),
-            'coronal_image': snapshots.get('coronal'),
-            'sagittal_image': snapshots.get('sagittal'),
-            'mip_image': snapshots.get('mip'),
-            'animation_gif': animation_gif,
-            'ohif_url': ohif_url,
+            "scan_id": scan_info.id,
+            "description": scan_info.description,
+            "modality": volume.modality,
+            "num_slices": volume.num_slices,
+            "pixel_spacing": volume.pixel_spacing,
+            "slice_thickness": volume.slice_thickness,
+            "decision": decision_data.get("decision", "Pending"),
+            "notes": decision_data.get("notes", ""),
+            "issues": decision_data.get("issues", []),
+            "qc_checks": [r.to_dict() for r in qc_report.results],
+            "orientation_labels": qc_report.orientation_labels,
+            "primary_plane": qc_report.primary_plane,
+            "axial_image": snapshots.get("axial"),
+            "coronal_image": snapshots.get("coronal"),
+            "sagittal_image": snapshots.get("sagittal"),
+            "mip_image": snapshots.get("mip"),
+            "animation_gif": animation_gif,
+            "ohif_url": ohif_url,
         }

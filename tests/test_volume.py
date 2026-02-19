@@ -15,30 +15,30 @@ class TestScanInfo:
     def test_scan_info_creation(self):
         """Test basic ScanInfo creation."""
         info = ScanInfo(
-            id='001',
-            description='T1 MPRAGE',
-            modality='MR',
+            id="001",
+            description="T1 MPRAGE",
+            modality="MR",
             num_files=192,
         )
-        assert info.id == '001'
-        assert info.description == 'T1 MPRAGE'
-        assert info.modality == 'MR'
+        assert info.id == "001"
+        assert info.description == "T1 MPRAGE"
+        assert info.modality == "MR"
         assert info.num_files == 192
 
     def test_scan_info_optional_fields(self):
         """Test ScanInfo with optional fields."""
         info = ScanInfo(
-            id='001',
-            description='CT Head',
-            modality='CT',
+            id="001",
+            description="CT Head",
+            modality="CT",
             num_files=256,
-            project='BRAIN01',
-            subject='SUBJ001',
-            experiment='EXP001',
+            project="BRAIN01",
+            subject="SUBJ001",
+            experiment="EXP001",
         )
-        assert info.project == 'BRAIN01'
-        assert info.subject == 'SUBJ001'
-        assert info.experiment == 'EXP001'
+        assert info.project == "BRAIN01"
+        assert info.subject == "SUBJ001"
+        assert info.experiment == "EXP001"
 
 
 class TestDicomVolumeInit:
@@ -46,8 +46,8 @@ class TestDicomVolumeInit:
 
     def test_basic_init(self, axial_volume):
         """Test basic DicomVolume initialization."""
-        assert axial_volume.modality == 'MR'
-        assert axial_volume.series_description == 'T1 MPRAGE'
+        assert axial_volume.modality == "MR"
+        assert axial_volume.series_description == "T1 MPRAGE"
         assert axial_volume.errors == []
         assert axial_volume.warnings == []
 
@@ -56,22 +56,22 @@ class TestDicomVolumeInit:
         image = create_sitk_image()
         volume = DicomVolume(
             sitk_image=image,
-            modality='CT',
-            series_description='CT Chest',
-            patient_position='HFS',
-            study_instance_uid='1.2.3.4',
-            series_instance_uid='1.2.3.5',
+            modality="CT",
+            series_description="CT Chest",
+            patient_position="HFS",
+            study_instance_uid="1.2.3.4",
+            series_instance_uid="1.2.3.5",
         )
-        assert volume.modality == 'CT'
-        assert volume.patient_position == 'HFS'
-        assert volume.study_instance_uid == '1.2.3.4'
-        assert volume.series_instance_uid == '1.2.3.5'
+        assert volume.modality == "CT"
+        assert volume.patient_position == "HFS"
+        assert volume.study_instance_uid == "1.2.3.4"
+        assert volume.series_instance_uid == "1.2.3.5"
 
     def test_init_with_errors_and_warnings(self):
         """Test initialization with errors and warnings."""
         image = create_sitk_image()
-        errors = [('file1.dcm', Exception('Corrupt file'))]
-        warnings = [('file2.dcm', 'Missing SliceThickness')]
+        errors = [("file1.dcm", Exception("Corrupt file"))]
+        warnings = [("file2.dcm", "Missing SliceThickness")]
         volume = DicomVolume(
             sitk_image=image,
             errors=errors,
@@ -87,8 +87,10 @@ class TestDicomVolumeInit:
 
     def test_init_missing_geometry_tags(self, missing_geometry_volume):
         """Test initialization with missing geometry tags."""
-        assert 'PixelSpacing' in missing_geometry_volume.missing_geometry_tags
-        assert 'ImageOrientationPatient' in missing_geometry_volume.missing_geometry_tags
+        assert "PixelSpacing" in missing_geometry_volume.missing_geometry_tags
+        assert (
+            "ImageOrientationPatient" in missing_geometry_volume.missing_geometry_tags
+        )
 
 
 class TestDicomVolumeShape:
@@ -370,33 +372,33 @@ class TestDicomVolumeSerialization:
     def test_to_dict(self, axial_volume):
         """Test to_dict method."""
         d = axial_volume.to_dict()
-        assert 'shape' in d
-        assert 'num_slices' in d
-        assert 'pixel_spacing' in d
-        assert 'slice_thickness' in d
-        assert 'voxel_spacing' in d
-        assert 'modality' in d
-        assert 'image_orientation' in d
-        assert 'intensity_range' in d
+        assert "shape" in d
+        assert "num_slices" in d
+        assert "pixel_spacing" in d
+        assert "slice_thickness" in d
+        assert "voxel_spacing" in d
+        assert "modality" in d
+        assert "image_orientation" in d
+        assert "intensity_range" in d
 
     def test_to_dict_values(self, axial_volume):
         """Test to_dict values are correct."""
         d = axial_volume.to_dict()
-        assert d['shape'] == (20, 256, 256)
-        assert d['num_slices'] == 20
-        assert d['modality'] == 'MR'
+        assert d["shape"] == (20, 256, 256)
+        assert d["num_slices"] == 20
+        assert d["modality"] == "MR"
 
     def test_to_dict_4d(self, volume_4d):
         """Test to_dict includes 4D info."""
         d = volume_4d.to_dict()
-        assert d['is_4d'] is True
-        assert d['num_timepoints'] == 100
+        assert d["is_4d"] is True
+        assert d["num_timepoints"] == 100
 
     def test_to_dict_orientation(self, axial_volume):
         """Test to_dict orientation is list."""
         d = axial_volume.to_dict()
-        assert isinstance(d['image_orientation'], list)
-        assert len(d['image_orientation']) == 6
+        assert isinstance(d["image_orientation"], list)
+        assert len(d["image_orientation"]) == 6
 
     def test_get_sitk_image(self, axial_volume):
         """Test get_sitk_image returns the SimpleITK image."""
@@ -411,8 +413,8 @@ class TestDicomVolumeEdgeCases:
     def test_empty_series_description(self):
         """Test volume with empty series description."""
         image = create_sitk_image()
-        volume = DicomVolume(sitk_image=image, series_description='')
-        assert volume.series_description == ''
+        volume = DicomVolume(sitk_image=image, series_description="")
+        assert volume.series_description == ""
 
     def test_num_orientations(self, localizer_volume):
         """Test multi-orientation volume."""
@@ -467,18 +469,18 @@ class TestFilter4D:
         # This simulates how XNAT might return files
         file_data = [
             # (file_id, temporal_position, slice_z)
-            ('f1', 2, 10),   # timepoint 2, slice 0
-            ('f2', 1, 20),   # timepoint 1, slice 1
-            ('f3', 4, 10),   # timepoint 4, slice 0
-            ('f4', 1, 10),   # timepoint 1, slice 0  <- should be in result
-            ('f5', 3, 30),   # timepoint 3, slice 2
-            ('f6', 2, 20),   # timepoint 2, slice 1
-            ('f7', 1, 30),   # timepoint 1, slice 2  <- should be in result
-            ('f8', 4, 20),   # timepoint 4, slice 1
-            ('f9', 3, 10),   # timepoint 3, slice 0
-            ('f10', 2, 30),  # timepoint 2, slice 2
-            ('f11', 4, 30),  # timepoint 4, slice 2
-            ('f12', 3, 20),  # timepoint 3, slice 1
+            ("f1", 2, 10),  # timepoint 2, slice 0
+            ("f2", 1, 20),  # timepoint 1, slice 1
+            ("f3", 4, 10),  # timepoint 4, slice 0
+            ("f4", 1, 10),  # timepoint 1, slice 0  <- should be in result
+            ("f5", 3, 30),  # timepoint 3, slice 2
+            ("f6", 2, 20),  # timepoint 2, slice 1
+            ("f7", 1, 30),  # timepoint 1, slice 2  <- should be in result
+            ("f8", 4, 20),  # timepoint 4, slice 1
+            ("f9", 3, 10),  # timepoint 3, slice 0
+            ("f10", 2, 30),  # timepoint 2, slice 2
+            ("f11", 4, 30),  # timepoint 4, slice 2
+            ("f12", 3, 20),  # timepoint 3, slice 1
         ]
 
         files = [f[0] for f in file_data]
@@ -496,7 +498,7 @@ class TestFilter4D:
         assert len(filtered) == 3
 
         # All returned files should be from timepoint 1
-        expected_files = {'f4', 'f2', 'f7'}  # timepoint 1 files
+        expected_files = {"f4", "f2", "f7"}  # timepoint 1 files
         assert set(filtered) == expected_files
 
     def test_filter_4d_with_sequential_files(self):
@@ -513,11 +515,20 @@ class TestFilter4D:
         # Need at least 10 files for 4D detection to run
         file_data = [
             # Timepoint 1 (4 slices)
-            ('f1', 1, 0), ('f2', 1, 10), ('f3', 1, 20), ('f4', 1, 30),
+            ("f1", 1, 0),
+            ("f2", 1, 10),
+            ("f3", 1, 20),
+            ("f4", 1, 30),
             # Timepoint 2
-            ('f5', 2, 0), ('f6', 2, 10), ('f7', 2, 20), ('f8', 2, 30),
+            ("f5", 2, 0),
+            ("f6", 2, 10),
+            ("f7", 2, 20),
+            ("f8", 2, 30),
             # Timepoint 3
-            ('f9', 3, 0), ('f10', 3, 10), ('f11', 3, 20), ('f12', 3, 30),
+            ("f9", 3, 0),
+            ("f10", 3, 10),
+            ("f11", 3, 20),
+            ("f12", 3, 30),
         ]
 
         files = [f[0] for f in file_data]
@@ -530,7 +541,7 @@ class TestFilter4D:
 
         assert num_timepoints == 3
         assert len(filtered) == 4
-        assert set(filtered) == {'f1', 'f2', 'f3', 'f4'}
+        assert set(filtered) == {"f1", "f2", "f3", "f4"}
 
     def test_filter_4d_with_interleaved_files(self):
         """Test 4D filtering with interleaved files."""
@@ -545,12 +556,18 @@ class TestFilter4D:
         # Interleaved: t1s0, t2s0, t1s1, t2s1, ...
         # Need at least 10 files for 4D detection to run
         file_data = [
-            ('f1', 1, 0), ('f2', 2, 0),
-            ('f3', 1, 10), ('f4', 2, 10),
-            ('f5', 1, 20), ('f6', 2, 20),
-            ('f7', 1, 30), ('f8', 2, 30),
-            ('f9', 1, 40), ('f10', 2, 40),
-            ('f11', 1, 50), ('f12', 2, 50),
+            ("f1", 1, 0),
+            ("f2", 2, 0),
+            ("f3", 1, 10),
+            ("f4", 2, 10),
+            ("f5", 1, 20),
+            ("f6", 2, 20),
+            ("f7", 1, 30),
+            ("f8", 2, 30),
+            ("f9", 1, 40),
+            ("f10", 2, 40),
+            ("f11", 1, 50),
+            ("f12", 2, 50),
         ]
 
         files = [f[0] for f in file_data]
@@ -563,7 +580,7 @@ class TestFilter4D:
 
         assert num_timepoints == 2
         assert len(filtered) == 6
-        assert set(filtered) == {'f1', 'f3', 'f5', 'f7', 'f9', 'f11'}
+        assert set(filtered) == {"f1", "f3", "f5", "f7", "f9", "f11"}
 
     def test_filter_4d_no_temporal_info(self):
         """Test that non-4D data passes through unchanged."""
@@ -575,7 +592,7 @@ class TestFilter4D:
                 # No NumberOfTemporalPositions or TemporalPositionIdentifier
 
         # Regular 3D volume - all unique slice positions
-        file_data = [('f1', 0), ('f2', 10), ('f3', 20), ('f4', 30)]
+        file_data = [("f1", 0), ("f2", 10), ("f3", 20), ("f4", 30)]
         files = [f[0] for f in file_data]
         metadata_map = {f[0]: MockMetadata(f[1]) for f in file_data}
 
@@ -592,7 +609,7 @@ class TestFilter4D:
         """Test that small file counts skip 4D detection."""
         from dicom_qc.core.dicom_loader import _filter_4d_generic
 
-        files = ['f1', 'f2', 'f3']  # Only 3 files
+        files = ["f1", "f2", "f3"]  # Only 3 files
 
         def read_metadata(f):
             return None
@@ -619,9 +636,18 @@ class TestFilter4D:
         # 4 slices repeated 3 times (simulating 3 timepoints)
         # Files in random order
         file_data = [
-            ('f1', 20), ('f2', 0), ('f3', 10), ('f4', 30),   # "timepoint 1"
-            ('f5', 10), ('f6', 30), ('f7', 0), ('f8', 20),   # "timepoint 2"
-            ('f9', 30), ('f10', 20), ('f11', 0), ('f12', 10), # "timepoint 3"
+            ("f1", 20),
+            ("f2", 0),
+            ("f3", 10),
+            ("f4", 30),  # "timepoint 1"
+            ("f5", 10),
+            ("f6", 30),
+            ("f7", 0),
+            ("f8", 20),  # "timepoint 2"
+            ("f9", 30),
+            ("f10", 20),
+            ("f11", 0),
+            ("f12", 10),  # "timepoint 3"
         ]
 
         files = [f[0] for f in file_data]

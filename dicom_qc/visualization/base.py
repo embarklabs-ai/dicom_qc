@@ -12,15 +12,13 @@ class VolumeRenderer:
 
     # Standard radiological convention orientation labels
     ORIENTATION_LABELS = {
-        'axial': {'left': 'R', 'right': 'L', 'top': 'A', 'bottom': 'P'},
-        'coronal': {'left': 'R', 'right': 'L', 'top': 'S', 'bottom': 'I'},
-        'sagittal': {'left': 'A', 'right': 'P', 'top': 'S', 'bottom': 'I'},
+        "axial": {"left": "R", "right": "L", "top": "A", "bottom": "P"},
+        "coronal": {"left": "R", "right": "L", "top": "S", "bottom": "I"},
+        "sagittal": {"left": "A", "right": "P", "top": "S", "bottom": "I"},
     }
 
     def __init__(
-        self,
-        volume: DicomVolume,
-        window: Optional[Tuple[float, float]] = None
+        self, volume: DicomVolume, window: Optional[Tuple[float, float]] = None
     ):
         """
         Initialize with a DICOM volume.
@@ -62,11 +60,11 @@ class VolumeRenderer:
         - Coronal: perpendicular to Anterior-Posterior axis, slice along P (axis 1)
         - Sagittal: perpendicular to Left-Right axis, slice along L (axis 2)
         """
-        if view == 'axial':
+        if view == "axial":
             return self.lps_array.shape[0]  # S axis
-        elif view == 'coronal':
+        elif view == "coronal":
             return self.lps_array.shape[1]  # P axis
-        elif view == 'sagittal':
+        elif view == "sagittal":
             return self.lps_array.shape[2]  # L axis
         return 0
 
@@ -78,11 +76,11 @@ class VolumeRenderer:
         - Coronal slice at P=j: array[:, j, :] gives [S, L] view
         - Sagittal slice at L=k: array[:, :, k] gives [S, P] view
         """
-        if view == 'axial':
+        if view == "axial":
             return self.lps_array[index, :, :]  # [P, L]
-        elif view == 'coronal':
+        elif view == "coronal":
             return self.lps_array[:, index, :]  # [S, L]
-        elif view == 'sagittal':
+        elif view == "sagittal":
             return self.lps_array[:, :, index]  # [S, P]
         raise ValueError(f"Unknown view: {view}")
 
@@ -94,13 +92,13 @@ class VolumeRenderer:
         """
         s_spacing, p_spacing, l_spacing = self.lps_spacing
 
-        if view == 'axial':
+        if view == "axial":
             # Axial: array[i,:,:] gives [P, L] -> rows=P, cols=L
             return p_spacing / l_spacing
-        elif view == 'coronal':
+        elif view == "coronal":
             # Coronal: array[:,j,:] gives [S, L] -> rows=S, cols=L
             return s_spacing / l_spacing
-        elif view == 'sagittal':
+        elif view == "sagittal":
             # Sagittal: array[:,:,k] gives [S, P] -> rows=S, cols=P
             return s_spacing / p_spacing
         return 1.0
@@ -111,27 +109,24 @@ class VolumeRenderer:
         Use origin='lower' for coronal/sagittal so inferior is at bottom.
         Axial uses origin='upper' (anterior at top in radiological convention).
         """
-        return 'upper' if view == 'axial' else 'lower'
+        return "upper" if view == "axial" else "lower"
 
     def get_orientation_labels(self, view: str) -> Dict[str, str]:
         """Get orientation labels for a view using standard radiological convention."""
         return self.ORIENTATION_LABELS.get(view, {})
 
     def add_orientation_labels(
-        self,
-        ax: plt.Axes,
-        view: str,
-        fontsize: int = 14
+        self, ax: plt.Axes, view: str, fontsize: int = 14
     ) -> None:
         """Add L/R, A/P, S/I labels to image edges."""
         labels = self.get_orientation_labels(view)
 
         props = dict(
             fontsize=fontsize,
-            fontweight='bold',
-            color='yellow',
-            ha='center',
-            va='center',
+            fontweight="bold",
+            color="yellow",
+            ha="center",
+            va="center",
         )
 
         # Get axis limits
@@ -149,14 +144,14 @@ class VolumeRenderer:
         y_center = (ylim[0] + ylim[1]) / 2
 
         # Add labels
-        if 'left' in labels:
-            ax.text(x_left, y_center, labels['left'], **props)
-        if 'right' in labels:
-            ax.text(x_right, y_center, labels['right'], **props)
-        if 'top' in labels:
-            ax.text(x_center, y_top, labels['top'], **props)
-        if 'bottom' in labels:
-            ax.text(x_center, y_bottom, labels['bottom'], **props)
+        if "left" in labels:
+            ax.text(x_left, y_center, labels["left"], **props)
+        if "right" in labels:
+            ax.text(x_right, y_center, labels["right"], **props)
+        if "top" in labels:
+            ax.text(x_center, y_top, labels["top"], **props)
+        if "bottom" in labels:
+            ax.text(x_center, y_bottom, labels["bottom"], **props)
 
     def display_slice(
         self,
@@ -164,7 +159,7 @@ class VolumeRenderer:
         view: str,
         slice_index: Optional[int] = None,
         show_labels: bool = True,
-        label_fontsize: int = 14
+        label_fontsize: int = 14,
     ):
         """Display a slice on the given axes with proper orientation and aspect ratio.
 
@@ -185,15 +180,17 @@ class VolumeRenderer:
         aspect = self.calculate_aspect_ratio(view)
         origin = self.get_image_origin(view)
 
-        im = ax.imshow(img, cmap='gray', aspect=aspect, origin=origin, interpolation='bilinear')
-        ax.axis('off')
+        im = ax.imshow(
+            img, cmap="gray", aspect=aspect, origin=origin, interpolation="bilinear"
+        )
+        ax.axis("off")
 
         if show_labels:
             self.add_orientation_labels(ax, view, fontsize=label_fontsize)
 
         return im
 
-    def generate_mip(self, plane: str = 'sagittal') -> np.ndarray:
+    def generate_mip(self, plane: str = "sagittal") -> np.ndarray:
         """Generate Maximum Intensity Projection for a given anatomical plane.
 
         Args:
@@ -204,6 +201,6 @@ class VolumeRenderer:
         - Coronal MIP: collapse along P axis (1)
         - Sagittal MIP: collapse along L axis (2)
         """
-        axis = {'axial': 0, 'coronal': 1, 'sagittal': 2}.get(plane, 2)
+        axis = {"axial": 0, "coronal": 1, "sagittal": 2}.get(plane, 2)
         mip = np.max(self.lps_array, axis=axis)
         return self.apply_window(mip)

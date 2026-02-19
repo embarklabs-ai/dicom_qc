@@ -32,7 +32,7 @@ class XNATSession:
         self,
         server: Optional[str] = None,
         user: Optional[str] = None,
-        password: Optional[str] = None
+        password: Optional[str] = None,
     ) -> Any:
         """
         Connect to XNAT server.
@@ -58,9 +58,9 @@ class XNATSession:
         try:
             if server or user or password:
                 # Manual connection
-                server = server or os.environ.get('XNAT_HOST')
-                user = user or os.environ.get('XNAT_USER')
-                password = password or os.environ.get('XNAT_PASS')
+                server = server or os.environ.get("XNAT_HOST")
+                user = user or os.environ.get("XNAT_USER")
+                password = password or os.environ.get("XNAT_PASS")
 
                 if not server:
                     raise XNATConnectionError("No XNAT server URL provided")
@@ -140,12 +140,7 @@ class XNATSession:
 
         return [exp.label for exp in subj.experiments.values()]
 
-    def get_scans(
-        self,
-        project: str,
-        subject: str,
-        experiment: str
-    ) -> List[ScanInfo]:
+    def get_scans(self, project: str, subject: str, experiment: str) -> List[ScanInfo]:
         """
         Get list of scans in an experiment/session.
 
@@ -184,16 +179,17 @@ class XNATSession:
         for scan_id, scan in exp.scans.items():
             # Count DICOM files
             num_files = sum(
-                1 for f in scan.files.values()
-                if f.uri.endswith('.dcm') or f.uri.endswith('.DCM')
+                1
+                for f in scan.files.values()
+                if f.uri.endswith(".dcm") or f.uri.endswith(".DCM")
             )
 
             scan_info = ScanInfo(
                 id=scan_id,
-                description=getattr(scan, 'series_description', '') or scan_id,
-                modality=getattr(scan, 'modality', 'Unknown'),
+                description=getattr(scan, "series_description", "") or scan_id,
+                modality=getattr(scan, "modality", "Unknown"),
                 num_files=num_files,
-                series_description=getattr(scan, 'series_description', None),
+                series_description=getattr(scan, "series_description", None),
                 project=project,
                 subject=subject,
                 experiment=experiment,
@@ -220,7 +216,7 @@ class XNATSession:
         files = []
 
         for file_obj in scan.files.values():
-            if file_obj.uri.endswith('.dcm') or file_obj.uri.endswith('.DCM'):
+            if file_obj.uri.endswith(".dcm") or file_obj.uri.endswith(".DCM"):
                 files.append(file_obj)
 
         return files

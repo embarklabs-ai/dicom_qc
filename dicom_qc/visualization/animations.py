@@ -16,11 +16,11 @@ class AnimationGenerator(VolumeRenderer):
 
     def create_slice_animation(
         self,
-        view: str = 'axial',
+        view: str = "axial",
         fps: int = 10,
         output_path: Optional[str] = None,
         figsize: Tuple[float, float] = (6, 6),
-        show_labels: bool = True
+        show_labels: bool = True,
     ) -> Optional[bytes]:
         """
         Create animated slice-by-slice scrolling through volume.
@@ -40,39 +40,42 @@ class AnimationGenerator(VolumeRenderer):
         origin = self.get_image_origin(view)
 
         # Create figure with black background
-        fig, ax = plt.subplots(figsize=figsize, facecolor='black')
-        ax.set_facecolor('black')
-        ax.axis('off')
+        fig, ax = plt.subplots(figsize=figsize, facecolor="black")
+        ax.set_facecolor("black")
+        ax.axis("off")
 
         # Get first frame
         first_slice = self.extract_slice(view, 0)
         im = ax.imshow(
             self.apply_window(first_slice),
-            cmap='gray',
+            cmap="gray",
             aspect=aspect,
             origin=origin,
-            interpolation='bilinear'
+            interpolation="bilinear",
         )
 
         # Add slice counter text
         slice_text = ax.text(
-            0.02, 0.98, '',
+            0.02,
+            0.98,
+            "",
             transform=ax.transAxes,
             fontsize=12,
-            color='yellow',
-            verticalalignment='top',
-            fontweight='bold',
+            color="yellow",
+            verticalalignment="top",
+            fontweight="bold",
         )
 
         # Add title
         ax.text(
-            0.5, 0.02,
-            f'{view.capitalize()} View',
+            0.5,
+            0.02,
+            f"{view.capitalize()} View",
             transform=ax.transAxes,
             fontsize=12,
-            color='white',
-            ha='center',
-            va='bottom',
+            color="white",
+            ha="center",
+            va="bottom",
         )
 
         # Add orientation labels (static)
@@ -84,15 +87,11 @@ class AnimationGenerator(VolumeRenderer):
         def animate(frame):
             slice_data = self.extract_slice(view, frame)
             im.set_array(self.apply_window(slice_data))
-            slice_text.set_text(f'Slice: {frame + 1}/{num_slices}')
+            slice_text.set_text(f"Slice: {frame + 1}/{num_slices}")
             return [im, slice_text]
 
         anim = FuncAnimation(
-            fig,
-            animate,
-            frames=num_slices,
-            interval=1000 // fps,
-            blit=True
+            fig, animate, frames=num_slices, interval=1000 // fps, blit=True
         )
 
         return self._save_animation(fig, anim, fps, output_path)
@@ -102,7 +101,7 @@ class AnimationGenerator(VolumeRenderer):
         fps: int = 10,
         output_path: Optional[str] = None,
         figsize: Tuple[float, float] = (6, 6),
-        show_labels: bool = True
+        show_labels: bool = True,
     ) -> Optional[bytes]:
         """
         Create animation in the original acquisition plane (not reoriented).
@@ -127,44 +126,48 @@ class AnimationGenerator(VolumeRenderer):
 
         # Get acquisition orientation labels from DICOM
         from dicom_qc.core.geometry import GeometryQC
+
         geometry_qc = GeometryQC(self.volume)
         acq_labels = geometry_qc.get_acquisition_labels()
         plane = geometry_qc.run_all_checks().primary_plane
 
         # Create figure with black background
-        fig, ax = plt.subplots(figsize=figsize, facecolor='black')
-        ax.set_facecolor('black')
-        ax.axis('off')
+        fig, ax = plt.subplots(figsize=figsize, facecolor="black")
+        ax.set_facecolor("black")
+        ax.axis("off")
 
         # Get first frame
         first_slice = data[0, :, :]
         im = ax.imshow(
             self.apply_window(first_slice),
-            cmap='gray',
+            cmap="gray",
             aspect=aspect,
-            origin='upper',
-            interpolation='bilinear'
+            origin="upper",
+            interpolation="bilinear",
         )
 
         # Add slice counter text
         slice_text = ax.text(
-            0.02, 0.98, '',
+            0.02,
+            0.98,
+            "",
             transform=ax.transAxes,
             fontsize=12,
-            color='yellow',
-            verticalalignment='top',
-            fontweight='bold',
+            color="yellow",
+            verticalalignment="top",
+            fontweight="bold",
         )
 
         # Add title
         ax.text(
-            0.5, 0.02,
-            f'Acquisition Plane ({plane})',
+            0.5,
+            0.02,
+            f"Acquisition Plane ({plane})",
             transform=ax.transAxes,
             fontsize=12,
-            color='white',
-            ha='center',
-            va='bottom',
+            color="white",
+            ha="center",
+            va="bottom",
         )
 
         # Add orientation labels from DICOM
@@ -176,15 +179,11 @@ class AnimationGenerator(VolumeRenderer):
         def animate(frame):
             slice_data = data[frame, :, :]
             im.set_array(self.apply_window(slice_data))
-            slice_text.set_text(f'Slice: {frame + 1}/{num_slices}')
+            slice_text.set_text(f"Slice: {frame + 1}/{num_slices}")
             return [im, slice_text]
 
         anim = FuncAnimation(
-            fig,
-            animate,
-            frames=num_slices,
-            interval=1000 // fps,
-            blit=True
+            fig, animate, frames=num_slices, interval=1000 // fps, blit=True
         )
 
         return self._save_animation(fig, anim, fps, output_path)
@@ -201,17 +200,19 @@ class AnimationGenerator(VolumeRenderer):
         x_center = (xlim[0] + xlim[1]) / 2
         y_center = (ylim[0] + ylim[1]) / 2
 
-        props = dict(fontsize=12, fontweight='bold', color='yellow', ha='center', va='center')
-        ax.text(x_left, y_center, acq_labels.get('image_left', ''), **props)
-        ax.text(x_right, y_center, acq_labels.get('image_right', ''), **props)
-        ax.text(x_center, y_top, acq_labels.get('image_top', ''), **props)
-        ax.text(x_center, y_bottom, acq_labels.get('image_bottom', ''), **props)
+        props = dict(
+            fontsize=12, fontweight="bold", color="yellow", ha="center", va="center"
+        )
+        ax.text(x_left, y_center, acq_labels.get("image_left", ""), **props)
+        ax.text(x_right, y_center, acq_labels.get("image_right", ""), **props)
+        ax.text(x_center, y_top, acq_labels.get("image_top", ""), **props)
+        ax.text(x_center, y_bottom, acq_labels.get("image_bottom", ""), **props)
 
     def create_three_plane_animation(
         self,
         fps: int = 8,
         output_path: Optional[str] = None,
-        figsize: Tuple[float, float] = (12, 4)
+        figsize: Tuple[float, float] = (12, 4),
     ) -> Optional[bytes]:
         """
         Create synchronized animation showing all three anatomical planes.
@@ -224,21 +225,21 @@ class AnimationGenerator(VolumeRenderer):
         Returns:
             Bytes of the GIF animation if output_path is None
         """
-        views = ['axial', 'coronal', 'sagittal']
+        views = ["axial", "coronal", "sagittal"]
         num_slices = {view: self.get_num_slices(view) for view in views}
 
         # Use the minimum dimension for synchronized scrolling
         num_frames = min(num_slices.values())
 
-        fig, axes = plt.subplots(1, 3, figsize=figsize, facecolor='black')
+        fig, axes = plt.subplots(1, 3, figsize=figsize, facecolor="black")
 
         images = []
         texts = []
 
         for idx, view in enumerate(views):
             ax = axes[idx]
-            ax.set_facecolor('black')
-            ax.axis('off')
+            ax.set_facecolor("black")
+            ax.axis("off")
 
             aspect = self.calculate_aspect_ratio(view)
             origin = self.get_image_origin(view)
@@ -246,26 +247,28 @@ class AnimationGenerator(VolumeRenderer):
             first_slice = self.extract_slice(view, 0)
             im = ax.imshow(
                 self.apply_window(first_slice),
-                cmap='gray',
+                cmap="gray",
                 aspect=aspect,
                 origin=origin,
-                interpolation='bilinear'
+                interpolation="bilinear",
             )
             images.append(im)
 
             # Slice counter
             text = ax.text(
-                0.02, 0.98, '',
+                0.02,
+                0.98,
+                "",
                 transform=ax.transAxes,
                 fontsize=10,
-                color='yellow',
-                verticalalignment='top',
-                fontweight='bold',
+                color="yellow",
+                verticalalignment="top",
+                fontweight="bold",
             )
             texts.append(text)
 
             # View title
-            ax.set_title(view.capitalize(), color='white', fontsize=11)
+            ax.set_title(view.capitalize(), color="white", fontsize=11)
 
             # Orientation labels
             self.add_orientation_labels(ax, view, fontsize=10)
@@ -282,27 +285,19 @@ class AnimationGenerator(VolumeRenderer):
 
                 slice_data = self.extract_slice(view, slice_idx)
                 images[idx].set_array(self.apply_window(slice_data))
-                texts[idx].set_text(f'{slice_idx + 1}/{max_slices}')
+                texts[idx].set_text(f"{slice_idx + 1}/{max_slices}")
                 updated.extend([images[idx], texts[idx]])
 
             return updated
 
         anim = FuncAnimation(
-            fig,
-            animate,
-            frames=num_frames,
-            interval=1000 // fps,
-            blit=True
+            fig, animate, frames=num_frames, interval=1000 // fps, blit=True
         )
 
         return self._save_animation(fig, anim, fps, output_path)
 
     def _save_animation(
-        self,
-        fig: plt.Figure,
-        anim: FuncAnimation,
-        fps: int,
-        output_path: Optional[str]
+        self, fig: plt.Figure, anim: FuncAnimation, fps: int, output_path: Optional[str]
     ) -> Optional[bytes]:
         """Save animation to file or return bytes."""
         writer = PillowWriter(fps=fps)
@@ -312,11 +307,13 @@ class AnimationGenerator(VolumeRenderer):
             plt.close(fig)
             return None
         else:
-            with tempfile.NamedTemporaryFile(suffix='.gif', delete=False) as tmp:
+            with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp:
                 tmp_path = tmp.name
             try:
-                anim.save(tmp_path, writer=writer, savefig_kwargs={'facecolor': 'black'})
-                with open(tmp_path, 'rb') as f:
+                anim.save(
+                    tmp_path, writer=writer, savefig_kwargs={"facecolor": "black"}
+                )
+                with open(tmp_path, "rb") as f:
                     result = f.read()
             finally:
                 os.unlink(tmp_path)
@@ -325,7 +322,7 @@ class AnimationGenerator(VolumeRenderer):
 
     def to_base64(self, animation_bytes: bytes) -> str:
         """Convert animation bytes to base64 for HTML embedding."""
-        return base64.b64encode(animation_bytes).decode('utf-8')
+        return base64.b64encode(animation_bytes).decode("utf-8")
 
     def generate_all_animations(self, fps: int = 10) -> Dict[str, str]:
         """
@@ -340,7 +337,7 @@ class AnimationGenerator(VolumeRenderer):
         animations = {}
 
         # Anatomical plane animations (LPS-reoriented)
-        for view in ['axial', 'coronal', 'sagittal']:
+        for view in ["axial", "coronal", "sagittal"]:
             try:
                 gif_bytes = self.create_slice_animation(view=view, fps=fps)
                 if gif_bytes:
@@ -352,7 +349,7 @@ class AnimationGenerator(VolumeRenderer):
         try:
             gif_bytes = self.create_acquisition_plane_animation(fps=fps)
             if gif_bytes:
-                animations['acquisition'] = self.to_base64(gif_bytes)
+                animations["acquisition"] = self.to_base64(gif_bytes)
         except Exception:
             pass
 
@@ -360,7 +357,7 @@ class AnimationGenerator(VolumeRenderer):
         try:
             gif_bytes = self.create_three_plane_animation(fps=fps)
             if gif_bytes:
-                animations['three_plane'] = self.to_base64(gif_bytes)
+                animations["three_plane"] = self.to_base64(gif_bytes)
         except Exception:
             pass
 

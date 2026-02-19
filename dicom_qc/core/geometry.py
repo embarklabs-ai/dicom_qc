@@ -13,7 +13,7 @@ from dicom_qc.core.volume import DicomVolume
 class QCResult:
     """Result of a single QC check."""
 
-    status: Literal['PASS', 'FAIL', 'WARNING', 'NOTE']
+    status: Literal["PASS", "FAIL", "WARNING", "NOTE"]
     check_name: str
     message: str
     details: Dict[str, Any] = field(default_factory=dict)
@@ -21,10 +21,10 @@ class QCResult:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
-            'status': self.status,
-            'check_name': self.check_name,
-            'message': self.message,
-            'details': self.details,
+            "status": self.status,
+            "check_name": self.check_name,
+            "message": self.message,
+            "details": self.details,
         }
 
 
@@ -34,7 +34,7 @@ class QCReport:
 
     scan_id: str
     results: List[QCResult]
-    overall_status: Literal['PASS', 'FAIL', 'WARNING', 'NOTE']
+    overall_status: Literal["PASS", "FAIL", "WARNING", "NOTE"]
     orientation_labels: Dict[str, str]
     primary_plane: str
     timestamp: datetime = field(default_factory=datetime.now)
@@ -42,12 +42,12 @@ class QCReport:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
-            'scan_id': self.scan_id,
-            'results': [r.to_dict() for r in self.results],
-            'overall_status': self.overall_status,
-            'orientation_labels': self.orientation_labels,
-            'primary_plane': self.primary_plane,
-            'timestamp': self.timestamp.isoformat(),
+            "scan_id": self.scan_id,
+            "results": [r.to_dict() for r in self.results],
+            "overall_status": self.overall_status,
+            "orientation_labels": self.orientation_labels,
+            "primary_plane": self.primary_plane,
+            "timestamp": self.timestamp.isoformat(),
         }
 
 
@@ -68,12 +68,12 @@ class GeometryQC:
 
     # JPEG-2000 transfer syntax UIDs that may have viewer compatibility issues
     JPEG2000_UIDS = {
-        '1.2.840.10008.1.2.4.90',  # JPEG 2000 Lossless
-        '1.2.840.10008.1.2.4.91',  # JPEG 2000 Lossy
+        "1.2.840.10008.1.2.4.90",  # JPEG 2000 Lossless
+        "1.2.840.10008.1.2.4.91",  # JPEG 2000 Lossy
     }
     # Implementations known to produce problematic JPEG-2000
     PROBLEMATIC_IMPLEMENTATIONS = {
-        'dcm4che-1.4-JP',  # Known to cause OHIF rendering issues
+        "dcm4che-1.4-JP",  # Known to cause OHIF rendering issues
     }
 
     def __init__(self, volume: DicomVolume):
@@ -99,10 +99,10 @@ class GeometryQC:
 
         if len(locations) < 2:
             return QCResult(
-                status='WARNING',
-                check_name='Slice Ordering',
-                message='Only one slice - cannot verify ordering',
-                details={'num_slices': len(locations)}
+                status="WARNING",
+                check_name="Slice Ordering",
+                message="Only one slice - cannot verify ordering",
+                details={"num_slices": len(locations)},
             )
 
         # Check for duplicates
@@ -110,10 +110,10 @@ class GeometryQC:
         if len(unique_locations) != len(locations):
             duplicates = self._find_duplicates(locations)
             return QCResult(
-                status='FAIL',
-                check_name='Slice Ordering',
-                message=f'Duplicate slice locations detected at {len(duplicates)} positions',
-                details={'duplicate_locations': duplicates}
+                status="FAIL",
+                check_name="Slice Ordering",
+                message=f"Duplicate slice locations detected at {len(duplicates)} positions",
+                details={"duplicate_locations": duplicates},
             )
 
         # Check monotonicity
@@ -122,30 +122,30 @@ class GeometryQC:
         is_monotonic_decreasing = np.all(diffs < 0)
 
         if is_monotonic_increasing or is_monotonic_decreasing:
-            direction = 'increasing' if is_monotonic_increasing else 'decreasing'
+            direction = "increasing" if is_monotonic_increasing else "decreasing"
             return QCResult(
-                status='PASS',
-                check_name='Slice Ordering',
-                message=f'Slices are monotonically {direction}',
+                status="PASS",
+                check_name="Slice Ordering",
+                message=f"Slices are monotonically {direction}",
                 details={
-                    'direction': direction,
-                    'num_slices': len(locations),
-                    'first_location': float(locations[0]),
-                    'last_location': float(locations[-1]),
-                }
+                    "direction": direction,
+                    "num_slices": len(locations),
+                    "first_location": float(locations[0]),
+                    "last_location": float(locations[-1]),
+                },
             )
 
         # Find where ordering breaks
         sign_changes = np.where(np.diff(np.sign(diffs)) != 0)[0]
         return QCResult(
-            status='FAIL',
-            check_name='Slice Ordering',
-            message=f'Non-monotonic slice ordering detected at {len(sign_changes)} locations',
+            status="FAIL",
+            check_name="Slice Ordering",
+            message=f"Non-monotonic slice ordering detected at {len(sign_changes)} locations",
             details={
-                'locations': locations.tolist(),
-                'differences': diffs.tolist(),
-                'sign_change_indices': sign_changes.tolist(),
-            }
+                "locations": locations.tolist(),
+                "differences": diffs.tolist(),
+                "sign_change_indices": sign_changes.tolist(),
+            },
         )
 
     def _find_duplicates(self, locations: np.ndarray) -> List[float]:
@@ -168,10 +168,10 @@ class GeometryQC:
         # Validate orientation is a proper 6-element array
         if len(orientation) != 6:
             return QCResult(
-                status='FAIL',
-                check_name='Orientation Consistency',
-                message=f'Invalid orientation: expected 6 values, got {len(orientation)}',
-                details={'orientation': orientation.tolist()}
+                status="FAIL",
+                check_name="Orientation Consistency",
+                message=f"Invalid orientation: expected 6 values, got {len(orientation)}",
+                details={"orientation": orientation.tolist()},
             )
 
         # Validate row and column vectors are unit vectors
@@ -183,35 +183,38 @@ class GeometryQC:
 
         if not np.isclose(row_mag, 1.0, atol=0.01):
             return QCResult(
-                status='WARNING',
-                check_name='Orientation Consistency',
-                message=f'Row direction vector is not unit length: {row_mag:.4f}',
-                details={'row_magnitude': row_mag, 'orientation': orientation.tolist()}
+                status="WARNING",
+                check_name="Orientation Consistency",
+                message=f"Row direction vector is not unit length: {row_mag:.4f}",
+                details={"row_magnitude": row_mag, "orientation": orientation.tolist()},
             )
 
         if not np.isclose(col_mag, 1.0, atol=0.01):
             return QCResult(
-                status='WARNING',
-                check_name='Orientation Consistency',
-                message=f'Column direction vector is not unit length: {col_mag:.4f}',
-                details={'col_magnitude': col_mag, 'orientation': orientation.tolist()}
+                status="WARNING",
+                check_name="Orientation Consistency",
+                message=f"Column direction vector is not unit length: {col_mag:.4f}",
+                details={"col_magnitude": col_mag, "orientation": orientation.tolist()},
             )
 
         # Validate row and column are orthogonal
         dot_product = np.dot(row, col)
         if not np.isclose(dot_product, 0.0, atol=0.01):
             return QCResult(
-                status='WARNING',
-                check_name='Orientation Consistency',
-                message=f'Row and column directions not orthogonal: dot={dot_product:.4f}',
-                details={'dot_product': dot_product, 'orientation': orientation.tolist()}
+                status="WARNING",
+                check_name="Orientation Consistency",
+                message=f"Row and column directions not orthogonal: dot={dot_product:.4f}",
+                details={
+                    "dot_product": dot_product,
+                    "orientation": orientation.tolist(),
+                },
             )
 
         return QCResult(
-            status='PASS',
-            check_name='Orientation Consistency',
-            message='Orientation vectors are valid and consistent',
-            details={'orientation': orientation.tolist()}
+            status="PASS",
+            check_name="Orientation Consistency",
+            message="Orientation vectors are valid and consistent",
+            details={"orientation": orientation.tolist()},
         )
 
     def check_gap_detection(self) -> QCResult:
@@ -229,10 +232,10 @@ class GeometryQC:
 
         if len(positions) < 2:
             return QCResult(
-                status='WARNING',
-                check_name='Gap Detection',
-                message='Only one slice - cannot check for gaps',
-                details={'num_slices': len(positions)}
+                status="WARNING",
+                check_name="Gap Detection",
+                message="Only one slice - cannot check for gaps",
+                details={"num_slices": len(positions)},
             )
 
         # Calculate 3D distances between consecutive slices
@@ -250,50 +253,52 @@ class GeometryQC:
         # Check spacing regularity
         spacing_mean = np.mean(distances)
         spacing_std = np.std(distances)
-        spacing_cv = spacing_std / spacing_mean if spacing_mean > 0 else 0  # Coefficient of variation
+        spacing_cv = (
+            spacing_std / spacing_mean if spacing_mean > 0 else 0
+        )  # Coefficient of variation
 
         details = {
-            'expected_spacing_mm': expected_spacing,
-            'actual_spacings_mm': distances.tolist(),
-            'spacing_mean_mm': float(spacing_mean),
-            'spacing_std_mm': float(spacing_std),
-            'spacing_cv': float(spacing_cv),
-            'num_slices': len(positions),
+            "expected_spacing_mm": expected_spacing,
+            "actual_spacings_mm": distances.tolist(),
+            "spacing_mean_mm": float(spacing_mean),
+            "spacing_std_mm": float(spacing_std),
+            "spacing_cv": float(spacing_cv),
+            "num_slices": len(positions),
         }
 
         if len(gap_indices) > 0:
             gap_info = [
                 {
-                    'between_slices': (int(i), int(i + 1)),
-                    'distance_mm': float(distances[i]),
-                    'expected_mm': expected_spacing,
-                    'ratio': float(distances[i] / expected_spacing),
+                    "between_slices": (int(i), int(i + 1)),
+                    "distance_mm": float(distances[i]),
+                    "expected_mm": expected_spacing,
+                    "ratio": float(distances[i] / expected_spacing),
                 }
                 for i in gap_indices
             ]
-            details['gaps'] = gap_info
+            details["gaps"] = gap_info
 
             return QCResult(
-                status='FAIL',
-                check_name='Gap Detection',
-                message=f'{len(gap_indices)} gap(s) detected (possible missing slices)',
-                details=details
+                status="FAIL",
+                check_name="Gap Detection",
+                message=f"{len(gap_indices)} gap(s) detected (possible missing slices)",
+                details=details,
             )
 
         # Check for irregular spacing (CV > 10%)
         if spacing_cv > 0.1:
             return QCResult(
-                status='WARNING',
-                check_name='Gap Detection',
-                message=f'Irregular slice spacing detected (CV={spacing_cv:.1%})',
-                details=details
+                status="WARNING",
+                check_name="Gap Detection",
+                message=f"Irregular slice spacing detected (CV={spacing_cv:.1%})",
+                details=details,
             )
 
         return QCResult(
-            status='PASS',
-            check_name='Gap Detection',
-            message=f'No gaps detected, regular spacing ({spacing_mean:.2f} mm)',
-            details=details
+            status="PASS",
+            check_name="Gap Detection",
+            message=f"No gaps detected, regular spacing ({spacing_mean:.2f} mm)",
+            details=details,
         )
 
     def check_orientation_labels(self) -> QCResult:
@@ -330,30 +335,30 @@ class GeometryQC:
         plane = self._determine_plane(slice_normal)
 
         labels = {
-            'row_positive': row_label,
-            'row_negative': self._get_opposite_label(row_label),
-            'col_positive': col_label,
-            'col_negative': self._get_opposite_label(col_label),
-            'slice_direction': slice_label,
-            'primary_plane': plane,
-            'image_right': row_labels[1],    # Positive row direction (right edge)
-            'image_left': row_labels[0],     # Negative row direction (left edge)
-            'image_bottom': col_labels[1],   # Positive col direction (bottom edge)
-            'image_top': col_labels[0],      # Negative col direction (top edge)
+            "row_positive": row_label,
+            "row_negative": self._get_opposite_label(row_label),
+            "col_positive": col_label,
+            "col_negative": self._get_opposite_label(col_label),
+            "slice_direction": slice_label,
+            "primary_plane": plane,
+            "image_right": row_labels[1],  # Positive row direction (right edge)
+            "image_left": row_labels[0],  # Negative row direction (left edge)
+            "image_bottom": col_labels[1],  # Positive col direction (bottom edge)
+            "image_top": col_labels[0],  # Negative col direction (top edge)
         }
 
         details = {
-            'orientation_labels': labels,
-            'row_cosines': row_cosines.tolist(),
-            'col_cosines': col_cosines.tolist(),
-            'slice_normal': slice_normal.tolist(),
+            "orientation_labels": labels,
+            "row_cosines": row_cosines.tolist(),
+            "col_cosines": col_cosines.tolist(),
+            "slice_normal": slice_normal.tolist(),
         }
 
         return QCResult(
-            status='PASS',
-            check_name='Orientation Labels',
-            message=f'{plane} orientation: Row→{row_label}, Col→{col_label}, Slice→{slice_label}',
-            details=details
+            status="PASS",
+            check_name="Orientation Labels",
+            message=f"{plane} orientation: Row→{row_label}, Col→{col_label}, Slice→{slice_label}",
+            details=details,
         )
 
     # LPS coordinate system mapping
@@ -361,9 +366,9 @@ class GeometryQC:
     # Y: negative=Anterior, positive=Posterior
     # Z: negative=Inferior, positive=Superior
     AXIS_LABELS = {
-        0: ('R', 'L'),  # X-axis
-        1: ('A', 'P'),  # Y-axis
-        2: ('I', 'S'),  # Z-axis
+        0: ("R", "L"),  # X-axis
+        1: ("A", "P"),  # Y-axis
+        2: ("I", "S"),  # Z-axis
     }
 
     def _get_axis_labels(self, direction_cosines: np.ndarray) -> tuple:
@@ -397,9 +402,12 @@ class GeometryQC:
     def _get_opposite_label(self, label: str) -> str:
         """Get the opposite anatomical label."""
         opposites = {
-            'L': 'R', 'R': 'L',
-            'A': 'P', 'P': 'A',
-            'S': 'I', 'I': 'S',
+            "L": "R",
+            "R": "L",
+            "A": "P",
+            "P": "A",
+            "S": "I",
+            "I": "S",
         }
         return opposites.get(label, label)
 
@@ -410,9 +418,9 @@ class GeometryQC:
 
         # Threshold for oblique detection
         if abs_normal[dominant] < self.OBLIQUE_THRESHOLD:
-            return 'OBLIQUE'
+            return "OBLIQUE"
 
-        plane_map = {0: 'SAGITTAL', 1: 'CORONAL', 2: 'AXIAL'}
+        plane_map = {0: "SAGITTAL", 1: "CORONAL", 2: "AXIAL"}
         return plane_map[dominant]
 
     def check_voxel_anisotropy(self) -> QCResult:
@@ -433,10 +441,13 @@ class GeometryQC:
                 slice_thickness = spacing[2]
             else:
                 return QCResult(
-                    status='WARNING',
-                    check_name='Voxel Anisotropy',
-                    message='Cannot assess anisotropy: slice thickness unavailable',
-                    details={'pixel_spacing_mm': list(spacing), 'slice_thickness_mm': None}
+                    status="WARNING",
+                    check_name="Voxel Anisotropy",
+                    message="Cannot assess anisotropy: slice thickness unavailable",
+                    details={
+                        "pixel_spacing_mm": list(spacing),
+                        "slice_thickness_mm": None,
+                    },
                 )
 
         # Get all three dimensions
@@ -444,49 +455,58 @@ class GeometryQC:
         min_dim = min(dims)
         max_dim = max(dims)
 
-        ratio = max_dim / min_dim if min_dim > 0 else float('inf')
+        ratio = max_dim / min_dim if min_dim > 0 else float("inf")
 
         details = {
-            'pixel_spacing_mm': list(spacing),
-            'slice_thickness_mm': slice_thickness,
-            'voxel_dimensions_mm': dims,
-            'anisotropy_ratio': float(ratio),
-            'min_dimension_mm': float(min_dim),
-            'max_dimension_mm': float(max_dim),
+            "pixel_spacing_mm": list(spacing),
+            "slice_thickness_mm": slice_thickness,
+            "voxel_dimensions_mm": dims,
+            "anisotropy_ratio": float(ratio),
+            "min_dimension_mm": float(min_dim),
+            "max_dimension_mm": float(max_dim),
         }
 
         if ratio > self.ANISOTROPY_WARNING:
             return QCResult(
-                status='WARNING',
-                check_name='Voxel Anisotropy',
-                message=f'Moderately anisotropic: {ratio:.1f}x ratio ({max_dim:.2f}/{min_dim:.2f} mm)',
-                details=details
+                status="WARNING",
+                check_name="Voxel Anisotropy",
+                message=f"Moderately anisotropic: {ratio:.1f}x ratio ({max_dim:.2f}/{min_dim:.2f} mm)",
+                details=details,
             )
         else:
             return QCResult(
-                status='PASS',
-                check_name='Voxel Anisotropy',
-                message=f'Isotropic voxels: {ratio:.1f}x ratio ({min_dim:.2f}-{max_dim:.2f} mm)',
-                details=details
+                status="PASS",
+                check_name="Voxel Anisotropy",
+                message=f"Isotropic voxels: {ratio:.1f}x ratio ({min_dim:.2f}-{max_dim:.2f} mm)",
+                details=details,
             )
 
     # Series description patterns that indicate potentially problematic series for strict viewers
     ADVANCED_SERIES_PATTERNS = {
-        'DTI': ['dti', 'diffusion', 'dwi', 'adc', 'fa_map', 'trace'],
-        'DSC_PERFUSION': ['dsc', 'perfusion', 'perf', 'cbv', 'cbf', 'mtt', 'ttp', 'tmax'],
-        'MOCO': ['moco', 'motion_corr', 'motion-corr'],
-        'DERIVED': ['derived', 'secondary', 'mip', 'reformat'],
+        "DTI": ["dti", "diffusion", "dwi", "adc", "fa_map", "trace"],
+        "DSC_PERFUSION": [
+            "dsc",
+            "perfusion",
+            "perf",
+            "cbv",
+            "cbf",
+            "mtt",
+            "ttp",
+            "tmax",
+        ],
+        "MOCO": ["moco", "motion_corr", "motion-corr"],
+        "DERIVED": ["derived", "secondary", "mip", "reformat"],
     }
 
     # Transfer syntaxes that may have viewer compatibility issues
     PROBLEMATIC_TRANSFER_SYNTAXES = {
-        '1.2.840.10008.1.2.4.90': 'JPEG 2000 Lossless',
-        '1.2.840.10008.1.2.4.91': 'JPEG 2000 Lossy',
-        '1.2.840.10008.1.2.4.92': 'JPEG 2000 Part 2 Lossless',
-        '1.2.840.10008.1.2.4.93': 'JPEG 2000 Part 2 Lossy',
-        '1.2.840.10008.1.2.4.80': 'JPEG-LS Lossless',
-        '1.2.840.10008.1.2.4.81': 'JPEG-LS Lossy',
-        '1.2.840.10008.1.2.5': 'RLE Lossless',
+        "1.2.840.10008.1.2.4.90": "JPEG 2000 Lossless",
+        "1.2.840.10008.1.2.4.91": "JPEG 2000 Lossy",
+        "1.2.840.10008.1.2.4.92": "JPEG 2000 Part 2 Lossless",
+        "1.2.840.10008.1.2.4.93": "JPEG 2000 Part 2 Lossy",
+        "1.2.840.10008.1.2.4.80": "JPEG-LS Lossless",
+        "1.2.840.10008.1.2.4.81": "JPEG-LS Lossy",
+        "1.2.840.10008.1.2.5": "RLE Lossless",
     }
 
     def check_series_type(self, series_description: str = "") -> QCResult:
@@ -499,7 +519,9 @@ class GeometryQC:
         Returns:
             QCResult with WARNING if potentially problematic series type detected
         """
-        desc_lower = (series_description or self.volume.series_description or "").lower()
+        desc_lower = (
+            series_description or self.volume.series_description or ""
+        ).lower()
         detected_types = []
 
         for series_type, patterns in self.ADVANCED_SERIES_PATTERNS.items():
@@ -508,21 +530,25 @@ class GeometryQC:
 
         if detected_types:
             return QCResult(
-                status='WARNING',
-                check_name='Series Type',
-                message=f'Advanced series type: {", ".join(detected_types)} - may have viewer compatibility issues',
+                status="WARNING",
+                check_name="Series Type",
+                message=f"Advanced series type: {', '.join(detected_types)} - may have viewer compatibility issues",
                 details={
-                    'detected_types': detected_types,
-                    'series_description': series_description or self.volume.series_description,
-                    'note': 'DTI/DSC/MoCo series may fail in ITK-SNAP, 3D Slicer due to strict DICOM conformance'
-                }
+                    "detected_types": detected_types,
+                    "series_description": series_description
+                    or self.volume.series_description,
+                    "note": "DTI/DSC/MoCo series may fail in ITK-SNAP, 3D Slicer due to strict DICOM conformance",
+                },
             )
 
         return QCResult(
-            status='PASS',
-            check_name='Series Type',
-            message='Standard series type',
-            details={'series_description': series_description or self.volume.series_description}
+            status="PASS",
+            check_name="Series Type",
+            message="Standard series type",
+            details={
+                "series_description": series_description
+                or self.volume.series_description
+            },
         )
 
     def check_frame_of_reference(self) -> QCResult:
@@ -541,10 +567,10 @@ class GeometryQC:
 
         if len(positions) < 2:
             return QCResult(
-                status='PASS',
-                check_name='Frame of Reference',
-                message='Single slice - frame of reference assumed consistent',
-                details={'num_slices': len(positions)}
+                status="PASS",
+                check_name="Frame of Reference",
+                message="Single slice - frame of reference assumed consistent",
+                details={"num_slices": len(positions)},
             )
 
         # Check that all slices lie on a consistent plane/line
@@ -554,10 +580,13 @@ class GeometryQC:
 
         if slice_dir_norm < 1e-6:
             return QCResult(
-                status='WARNING',
-                check_name='Frame of Reference',
-                message='First two slices have identical positions',
-                details={'position_0': positions[0].tolist(), 'position_1': positions[1].tolist()}
+                status="WARNING",
+                check_name="Frame of Reference",
+                message="First two slices have identical positions",
+                details={
+                    "position_0": positions[0].tolist(),
+                    "position_1": positions[1].tolist(),
+                },
             )
 
         slice_dir = slice_dir / slice_dir_norm
@@ -580,28 +609,30 @@ class GeometryQC:
 
                 # Flag if deviation > 1mm (slices not coplanar)
                 if deviation > 1.0:
-                    problem_slices.append({'slice': i, 'deviation_mm': float(deviation)})
+                    problem_slices.append(
+                        {"slice": i, "deviation_mm": float(deviation)}
+                    )
 
         details = {
-            'num_slices': len(positions),
-            'max_deviation_mm': float(max_deviation),
-            'slice_direction': slice_dir.tolist(),
+            "num_slices": len(positions),
+            "max_deviation_mm": float(max_deviation),
+            "slice_direction": slice_dir.tolist(),
         }
 
         if problem_slices:
-            details['problem_slices'] = problem_slices[:5]  # Limit to first 5
+            details["problem_slices"] = problem_slices[:5]  # Limit to first 5
             return QCResult(
-                status='WARNING',
-                check_name='Frame of Reference',
-                message=f'Slices not coplanar: {len(problem_slices)} slices deviate up to {max_deviation:.1f}mm',
-                details=details
+                status="WARNING",
+                check_name="Frame of Reference",
+                message=f"Slices not coplanar: {len(problem_slices)} slices deviate up to {max_deviation:.1f}mm",
+                details=details,
             )
 
         return QCResult(
-            status='PASS',
-            check_name='Frame of Reference',
-            message=f'Slices are coplanar (max deviation: {max_deviation:.2f}mm)',
-            details=details
+            status="PASS",
+            check_name="Frame of Reference",
+            message=f"Slices are coplanar (max deviation: {max_deviation:.2f}mm)",
+            details=details,
         )
 
     def check_slice_count(self) -> QCResult:
@@ -620,41 +651,43 @@ class GeometryQC:
 
         # Calculate expected coverage
         if len(self.volume.slice_locations) > 1:
-            coverage_mm = abs(self.volume.slice_locations[-1] - self.volume.slice_locations[0])
+            coverage_mm = abs(
+                self.volume.slice_locations[-1] - self.volume.slice_locations[0]
+            )
             expected_slices = int(coverage_mm / slice_thickness) + 1
         else:
             expected_slices = num_slices
             coverage_mm = 0
 
         details = {
-            'num_slices': num_slices,
-            'coverage_mm': float(coverage_mm),
-            'slice_thickness_mm': float(slice_thickness),
-            'expected_slices': expected_slices,
+            "num_slices": num_slices,
+            "coverage_mm": float(coverage_mm),
+            "slice_thickness_mm": float(slice_thickness),
+            "expected_slices": expected_slices,
         }
 
         if num_slices < 3:
             return QCResult(
-                status='WARNING',
-                check_name='Slice Count',
-                message=f'Very few slices ({num_slices}) - may be incomplete or localizer',
-                details=details
+                status="WARNING",
+                check_name="Slice Count",
+                message=f"Very few slices ({num_slices}) - may be incomplete or localizer",
+                details=details,
             )
 
         # Check if significantly fewer slices than expected (possible truncation)
         if expected_slices > 0 and num_slices < expected_slices * 0.8:
             return QCResult(
-                status='WARNING',
-                check_name='Slice Count',
-                message=f'Fewer slices than expected: {num_slices} vs ~{expected_slices} (possible truncation)',
-                details=details
+                status="WARNING",
+                check_name="Slice Count",
+                message=f"Fewer slices than expected: {num_slices} vs ~{expected_slices} (possible truncation)",
+                details=details,
             )
 
         return QCResult(
-            status='PASS',
-            check_name='Slice Count',
-            message=f'{num_slices} slices, {coverage_mm:.1f}mm coverage',
-            details=details
+            status="PASS",
+            check_name="Slice Count",
+            message=f"{num_slices} slices, {coverage_mm:.1f}mm coverage",
+            details=details,
         )
 
     def check_geometry_metadata(self) -> QCResult:
@@ -668,38 +701,42 @@ class GeometryQC:
         Returns:
             QCResult with FAIL if critical geometry metadata is missing
         """
-        missing_tags = getattr(self.volume, 'missing_geometry_tags', [])
+        missing_tags = getattr(self.volume, "missing_geometry_tags", [])
 
         # Critical tags that affect geometry
-        critical_missing = [t for t in missing_tags if t in ('PixelSpacing', 'ImageOrientationPatient', 'ImagePositionPatient')]
+        critical_missing = [
+            t
+            for t in missing_tags
+            if t in ("PixelSpacing", "ImageOrientationPatient", "ImagePositionPatient")
+        ]
 
         if critical_missing:
             return QCResult(
-                status='FAIL',
-                check_name='Geometry Metadata',
-                message=f'Missing DICOM tags: {", ".join(critical_missing)}',
+                status="FAIL",
+                check_name="Geometry Metadata",
+                message=f"Missing DICOM tags: {', '.join(critical_missing)}",
                 details={
-                    'missing_tags': missing_tags,
-                    'note': 'Derived images may lose geometry metadata, making 3D reconstruction unreliable'
-                }
+                    "missing_tags": missing_tags,
+                    "note": "Derived images may lose geometry metadata, making 3D reconstruction unreliable",
+                },
             )
 
         # SliceThickness alone is a warning (spacing can be inferred from positions)
-        if 'SliceThickness' in missing_tags:
+        if "SliceThickness" in missing_tags:
             return QCResult(
-                status='WARNING',
-                check_name='Geometry Metadata',
-                message='Missing SliceThickness tag (spacing inferred from positions)',
+                status="WARNING",
+                check_name="Geometry Metadata",
+                message="Missing SliceThickness tag (spacing inferred from positions)",
                 details={
-                    'missing_tags': missing_tags,
-                }
+                    "missing_tags": missing_tags,
+                },
             )
 
         return QCResult(
-            status='PASS',
-            check_name='Geometry Metadata',
-            message='Geometry metadata present',
-            details={}
+            status="PASS",
+            check_name="Geometry Metadata",
+            message="Geometry metadata present",
+            details={},
         )
 
     def check_4d_data(self) -> QCResult:
@@ -712,25 +749,25 @@ class GeometryQC:
         Returns:
             QCResult with INFO if 4D data detected
         """
-        num_timepoints = getattr(self.volume, 'num_timepoints', None)
+        num_timepoints = getattr(self.volume, "num_timepoints", None)
 
         if num_timepoints is not None and num_timepoints > 1:
             return QCResult(
-                status='NOTE',
-                check_name='4D Data',
-                message=f'4D dataset ({num_timepoints} timepoints) - displaying first volume only',
+                status="NOTE",
+                check_name="4D Data",
+                message=f"4D dataset ({num_timepoints} timepoints) - displaying first volume only",
                 details={
-                    'num_timepoints': num_timepoints,
-                    'displayed_timepoint': 0,
-                    'note': 'fMRI/DTI/DSC data - full timeseries not shown in viewer'
-                }
+                    "num_timepoints": num_timepoints,
+                    "displayed_timepoint": 0,
+                    "note": "fMRI/DTI/DSC data - full timeseries not shown in viewer",
+                },
             )
 
         return QCResult(
-            status='PASS',
-            check_name='4D Data',
-            message='3D dataset',
-            details={'is_4d': False}
+            status="PASS",
+            check_name="4D Data",
+            message="3D dataset",
+            details={"is_4d": False},
         )
 
     def check_reconstructability(self) -> QCResult:
@@ -751,24 +788,26 @@ class GeometryQC:
 
         if num_slices < 2:
             return QCResult(
-                status='WARNING',
-                check_name='Reconstructability',
-                message='Single slice - not a 3D volume',
-                details={'num_slices': num_slices}
+                status="WARNING",
+                check_name="Reconstructability",
+                message="Single slice - not a 3D volume",
+                details={"num_slices": num_slices},
             )
 
         # Calculate inter-slice distances and directions
         issues = []
 
         # Check 0: Multiple orientations detected during loading (most reliable check)
-        num_orientations = getattr(self.volume, 'num_orientations', 1)
+        num_orientations = getattr(self.volume, "num_orientations", 1)
         if num_orientations > 1:
-            issues.append(f"Frames have {num_orientations} different orientations (multi-plane localizer)")
+            issues.append(
+                f"Frames have {num_orientations} different orientations (multi-plane localizer)"
+            )
 
         # Check 1: Are slices coplanar? (different orientations = not coplanar)
         slice_vectors = []
         for i in range(1, len(positions)):
-            vec = positions[i] - positions[i-1]
+            vec = positions[i] - positions[i - 1]
             norm = np.linalg.norm(vec)
             if norm > 1e-6:
                 slice_vectors.append(vec / norm)
@@ -792,15 +831,23 @@ class GeometryQC:
                     inconsistent_count += 1
 
             if inconsistent_count > 0:
-                issues.append(f"Frames have different orientations ({inconsistent_count + 1} directions detected)")
+                issues.append(
+                    f"Frames have different orientations ({inconsistent_count + 1} directions detected)"
+                )
 
         # Check 2: Irregular spacing pattern typical of localizers
         if len(positions) >= 3:
             distances = np.linalg.norm(np.diff(positions, axis=0), axis=1)
             if len(distances) > 1:
-                spacing_cv = np.std(distances) / np.mean(distances) if np.mean(distances) > 0 else 0
+                spacing_cv = (
+                    np.std(distances) / np.mean(distances)
+                    if np.mean(distances) > 0
+                    else 0
+                )
                 if spacing_cv > 0.5:  # Very irregular
-                    issues.append(f"Highly irregular slice spacing (CV={spacing_cv:.0%})")
+                    issues.append(
+                        f"Highly irregular slice spacing (CV={spacing_cv:.0%})"
+                    )
 
         # Check 3: Few slices with large gaps (localizer pattern)
         if num_slices <= 15 and len(positions) >= 2:
@@ -809,26 +856,28 @@ class GeometryQC:
 
             # Localizers often have 50-100mm+ spacing between slices
             if avg_spacing > 30:
-                issues.append(f"Large inter-slice spacing ({avg_spacing:.0f}mm avg) - likely localizer/scout")
+                issues.append(
+                    f"Large inter-slice spacing ({avg_spacing:.0f}mm avg) - likely localizer/scout"
+                )
 
         details = {
-            'num_slices': num_slices,
-            'issues': issues,
+            "num_slices": num_slices,
+            "issues": issues,
         }
 
         if issues:
             return QCResult(
-                status='FAIL',
-                check_name='Reconstructability',
-                message=f'Not reconstructable: {"; ".join(issues)}',
-                details=details
+                status="FAIL",
+                check_name="Reconstructability",
+                message=f"Not reconstructable: {'; '.join(issues)}",
+                details=details,
             )
 
         return QCResult(
-            status='PASS',
-            check_name='Reconstructability',
-            message='Volume is reconstructable as 3D dataset',
-            details=details
+            status="PASS",
+            check_name="Reconstructability",
+            message="Volume is reconstructable as 3D dataset",
+            details=details,
         )
 
     def run_all_checks(self, scan_id: str = "unknown") -> QCReport:
@@ -856,19 +905,19 @@ class GeometryQC:
 
         # Determine overall status (NOTE doesn't escalate like WARNING)
         statuses = [r.status for r in results]
-        if 'FAIL' in statuses:
-            overall_status = 'FAIL'
-        elif 'WARNING' in statuses:
-            overall_status = 'WARNING'
-        elif 'NOTE' in statuses:
-            overall_status = 'NOTE'
+        if "FAIL" in statuses:
+            overall_status = "FAIL"
+        elif "WARNING" in statuses:
+            overall_status = "WARNING"
+        elif "NOTE" in statuses:
+            overall_status = "NOTE"
         else:
-            overall_status = 'PASS'
+            overall_status = "PASS"
 
         # Extract orientation info from the orientation labels check (last result)
         orientation_result = results[-1]
-        orientation_labels = orientation_result.details.get('orientation_labels', {})
-        primary_plane = orientation_labels.get('primary_plane', 'UNKNOWN')
+        orientation_labels = orientation_result.details.get("orientation_labels", {})
+        primary_plane = orientation_labels.get("primary_plane", "UNKNOWN")
 
         return QCReport(
             scan_id=scan_id,
@@ -899,23 +948,23 @@ class GeometryQC:
         # Standard radiological convention labels
         # These are the conventional labels regardless of acquisition orientation
         return {
-            'axial': {
-                'left': 'R',      # Patient's right on viewer's left
-                'right': 'L',    # Patient's left on viewer's right
-                'top': 'A',      # Anterior at top
-                'bottom': 'P',   # Posterior at bottom
+            "axial": {
+                "left": "R",  # Patient's right on viewer's left
+                "right": "L",  # Patient's left on viewer's right
+                "top": "A",  # Anterior at top
+                "bottom": "P",  # Posterior at bottom
             },
-            'coronal': {
-                'left': 'R',
-                'right': 'L',
-                'top': 'S',      # Superior at top
-                'bottom': 'I',   # Inferior at bottom
+            "coronal": {
+                "left": "R",
+                "right": "L",
+                "top": "S",  # Superior at top
+                "bottom": "I",  # Inferior at bottom
             },
-            'sagittal': {
-                'left': 'A',     # Anterior on left
-                'right': 'P',    # Posterior on right
-                'top': 'S',
-                'bottom': 'I',
+            "sagittal": {
+                "left": "A",  # Anterior on left
+                "right": "P",  # Posterior on right
+                "top": "S",
+                "bottom": "I",
             },
         }
 
@@ -939,8 +988,8 @@ class GeometryQC:
         col_labels = self._get_axis_labels(col_cosines)  # (neg, pos)
 
         return {
-            'image_left': row_labels[0],
-            'image_right': row_labels[1],
-            'image_top': col_labels[0],
-            'image_bottom': col_labels[1],
+            "image_left": row_labels[0],
+            "image_right": row_labels[1],
+            "image_top": col_labels[0],
+            "image_bottom": col_labels[1],
         }

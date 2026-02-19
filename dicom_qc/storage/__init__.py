@@ -3,4 +3,4 @@
 from .database import QCDatabase
 from .thumbnail_cache import ThumbnailCache
 
-__all__ = ['QCDatabase', 'ThumbnailCache']
+__all__ = ["QCDatabase", "ThumbnailCache"]

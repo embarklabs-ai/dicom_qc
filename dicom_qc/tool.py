@@ -50,9 +50,7 @@ class DicomQCTool:
     """
 
     def __init__(
-        self,
-        connection: Optional[Any] = None,
-        xnat_url: Optional[str] = None
+        self, connection: Optional[Any] = None, xnat_url: Optional[str] = None
     ):
         """
         Initialize QC tool.
@@ -106,7 +104,7 @@ class DicomQCTool:
         project: str,
         subject: str,
         experiment: str,
-        scan_filter: Optional[List[str]] = None
+        scan_filter: Optional[List[str]] = None,
     ):
         """
         Load a specific session for QC review.
@@ -118,9 +116,9 @@ class DicomQCTool:
             scan_filter: Optional list of scan IDs to include
         """
         self.current_session = {
-            'project': project,
-            'subject': subject,
-            'experiment_id': experiment
+            "project": project,
+            "subject": subject,
+            "experiment_id": experiment,
         }
 
         # Update OHIF generator with correct URL
@@ -139,7 +137,8 @@ class DicomQCTool:
         self._qc_reports.clear()
         self.scan_results.clear()
 
-        display(HTML(f'''
+        display(
+            HTML(f"""
             <div style="background:#d4edda; padding:15px; border-radius:8px; margin:10px 0;">
                 <h3 style="margin-top:0;">Session Loaded</h3>
                 <p><strong>Project:</strong> {project}</p>
@@ -147,7 +146,8 @@ class DicomQCTool:
                 <p><strong>Session:</strong> {experiment}</p>
                 <p><strong>Scans:</strong> {len(scans)}</p>
             </div>
-        '''))
+        """)
+        )
 
     def load_from_path(self, path: str):
         """
@@ -162,18 +162,18 @@ class DicomQCTool:
 
         # Create a fake session info
         self.current_session = {
-            'project': 'Local',
-            'subject': path.parent.name,
-            'experiment_id': path.name
+            "project": "Local",
+            "subject": path.parent.name,
+            "experiment_id": path.name,
         }
 
         # Create a single ScanInfo for the directory
         scan_info = ScanInfo(
-            id='1',
+            id="1",
             description=path.name,
-            modality='Unknown',
-            num_files=len(list(path.glob('*.dcm'))),
-            project='Local',
+            modality="Unknown",
+            num_files=len(list(path.glob("*.dcm"))),
+            project="Local",
             subject=path.parent.name,
             experiment=path.name,
         )
@@ -188,21 +188,23 @@ class DicomQCTool:
         volume = loader.load_from_path(path)
         self._volumes[scan_info.id] = volume
 
-        display(HTML(f'''
+        display(
+            HTML(f"""
             <div style="background:#d4edda; padding:15px; border-radius:8px; margin:10px 0;">
                 <h3 style="margin-top:0;">Local Data Loaded</h3>
                 <p><strong>Path:</strong> {path}</p>
                 <p><strong>Modality:</strong> {volume.modality}</p>
                 <p><strong>Slices:</strong> {volume.num_slices}</p>
             </div>
-        '''))
+        """)
+        )
 
     def _on_single_scan_selected(self, scan_info: ScanInfo):
         """Handle single scan selection from browser."""
         self.current_session = {
-            'project': scan_info.project,
-            'subject': scan_info.subject,
-            'experiment_id': scan_info.experiment
+            "project": scan_info.project,
+            "subject": scan_info.subject,
+            "experiment_id": scan_info.experiment,
         }
         self.current_scans = [scan_info]
         self._load_and_display_scan(scan_info)
@@ -214,9 +216,9 @@ class DicomQCTool:
 
         first_scan = scans[0]
         self.current_session = {
-            'project': first_scan.project,
-            'subject': first_scan.subject,
-            'experiment_id': first_scan.experiment
+            "project": first_scan.project,
+            "subject": first_scan.subject,
+            "experiment_id": first_scan.experiment,
         }
         self.current_scans = scans
         self.review()
@@ -269,21 +271,23 @@ class DicomQCTool:
     def _display_qc_results(self, qc_report: QCReport):
         """Display QC check results."""
         results_html = ['<div style="margin:15px 0;">']
-        results_html.append(f'<h4>Geometry QC Results: {qc_report.primary_plane}</h4>')
+        results_html.append(f"<h4>Geometry QC Results: {qc_report.primary_plane}</h4>")
 
         for result in qc_report.results:
-            color = {'PASS': 'green', 'FAIL': 'red', 'WARNING': 'orange'}[result.status]
-            icon = {'PASS': '&#10003;', 'FAIL': '&#10007;', 'WARNING': '!'}[result.status]
+            color = {"PASS": "green", "FAIL": "red", "WARNING": "orange"}[result.status]
+            icon = {"PASS": "&#10003;", "FAIL": "&#10007;", "WARNING": "!"}[
+                result.status
+            ]
 
-            results_html.append(f'''
+            results_html.append(f"""
                 <div style="margin:5px 0; padding:8px; background:#f8f9fa; border-radius:4px;">
                     <span style="color:{color}; font-weight:bold;">{icon}</span>
                     <strong>{result.check_name}:</strong> {result.message}
                 </div>
-            ''')
+            """)
 
-        results_html.append('</div>')
-        display(HTML(''.join(results_html)))
+        results_html.append("</div>")
+        display(HTML("".join(results_html)))
 
     def review(self):
         """Start interactive QC review of loaded scans."""
@@ -303,25 +307,32 @@ class DicomQCTool:
         self._qc_output = widgets.Output()
 
         # Create layout
-        header = widgets.HTML('<h2>DICOM QC Review</h2>')
+        header = widgets.HTML("<h2>DICOM QC Review</h2>")
 
-        main_content = widgets.HBox([
-            widgets.VBox([
-                self._qc_output,
-                self._viewer_output,
-            ], layout=widgets.Layout(flex='2')),
-            self._controls_output,
-        ])
+        main_content = widgets.HBox(
+            [
+                widgets.VBox(
+                    [
+                        self._qc_output,
+                        self._viewer_output,
+                    ],
+                    layout=widgets.Layout(flex="2"),
+                ),
+                self._controls_output,
+            ]
+        )
 
         progress_output = widgets.Output()
         with progress_output:
             self._progress.display()
 
-        layout = widgets.VBox([
-            header,
-            progress_output,
-            main_content,
-        ])
+        layout = widgets.VBox(
+            [
+                header,
+                progress_output,
+                main_content,
+            ]
+        )
 
         display(layout)
 
@@ -347,7 +358,7 @@ class DicomQCTool:
         try:
             # Load volume
             with self._qc_output:
-                display(HTML(f'<p>Loading scan {scan.id}...</p>'))
+                display(HTML(f"<p>Loading scan {scan.id}...</p>"))
 
             volume = self._load_volume(scan)
             qc_report = self._get_qc_report(scan, volume)
@@ -366,7 +377,9 @@ class DicomQCTool:
             with self._controls_output:
                 self._controls = QCControls()
                 self._controls.on_decision(
-                    lambda d, n, i: self._on_decision_made(scan, volume, qc_report, d, n, i)
+                    lambda d, n, i: self._on_decision_made(
+                        scan, volume, qc_report, d, n, i
+                    )
                 )
                 self._controls.on_next(self._on_next_click)
                 self._controls.display()
@@ -374,11 +387,12 @@ class DicomQCTool:
                 # Add OHIF link if available
                 if self.ohif_generator and self.current_session:
                     ohif_url = self.ohif_generator.generate_scan_link(
-                        self.current_session['project'],
-                        self.current_session['experiment_id'],
-                        scan.id
+                        self.current_session["project"],
+                        self.current_session["experiment_id"],
+                        scan.id,
                     )
-                    display(HTML(f'''
+                    display(
+                        HTML(f'''
                         <div style="margin-top:15px;">
                             <a href="{ohif_url}" target="_blank"
                                style="display:inline-block; padding:10px 20px;
@@ -387,7 +401,8 @@ class DicomQCTool:
                                 Open in OHIF Viewer
                             </a>
                         </div>
-                    '''))
+                    ''')
+                    )
 
         except DicomQCError as e:
             with self._qc_output:
@@ -401,23 +416,23 @@ class DicomQCTool:
         qc_report: QCReport,
         decision: str,
         notes: str,
-        issues: List[str]
+        issues: List[str],
     ):
         """Handle QC decision for a scan."""
         result = {
-            'scan_id': scan.id,
-            'scan_info': scan,
-            'volume': volume,
-            'qc_report': qc_report,
-            'decision': decision,
-            'notes': notes,
-            'issues': issues,
+            "scan_id": scan.id,
+            "scan_info": scan,
+            "volume": volume,
+            "qc_report": qc_report,
+            "decision": decision,
+            "notes": notes,
+            "issues": issues,
         }
 
         # Update or add result
         existing_idx = next(
-            (i for i, r in enumerate(self.scan_results) if r['scan_id'] == scan.id),
-            None
+            (i for i, r in enumerate(self.scan_results) if r["scan_id"] == scan.id),
+            None,
         )
         if existing_idx is not None:
             self.scan_results[existing_idx] = result
@@ -425,11 +440,14 @@ class DicomQCTool:
             self.scan_results.append(result)
 
         # Record in progress tracker
-        self._progress.record_result(scan.id, {
-            'decision': decision,
-            'notes': notes,
-            'issues': issues,
-        })
+        self._progress.record_result(
+            scan.id,
+            {
+                "decision": decision,
+                "notes": notes,
+                "issues": issues,
+            },
+        )
 
     def _on_next_click(self):
         """Handle next button click."""
@@ -442,7 +460,7 @@ class DicomQCTool:
         self,
         output_path: Optional[str] = None,
         include_animations: bool = True,
-        animation_fps: int = 8
+        animation_fps: int = 8,
     ) -> str:
         """
         Generate HTML QC report.
@@ -465,14 +483,14 @@ class DicomQCTool:
         prepared_results = []
 
         for result in self.scan_results:
-            scan_info = result['scan_info']
-            volume = result['volume']
-            qc_report = result['qc_report']
+            scan_info = result["scan_info"]
+            volume = result["volume"]
+            qc_report = result["qc_report"]
 
             # Generate snapshots
             snapshot_gen = SnapshotGenerator(
                 volume,
-                window=self._viewer.get_current_window() if self._viewer else None
+                window=self._viewer.get_current_window() if self._viewer else None,
             )
             snapshots = snapshot_gen.generate_all_snapshots()
 
@@ -488,9 +506,9 @@ class DicomQCTool:
             ohif_url = None
             if self.ohif_generator:
                 ohif_url = self.ohif_generator.generate_scan_link(
-                    self.current_session['project'],
-                    self.current_session['experiment_id'],
-                    scan_info.id
+                    self.current_session["project"],
+                    self.current_session["experiment_id"],
+                    scan_info.id,
                 )
 
             prepared_result = generator.prepare_scan_result(
@@ -498,9 +516,9 @@ class DicomQCTool:
                 volume=volume,
                 qc_report=qc_report,
                 decision_data={
-                    'decision': result['decision'],
-                    'notes': result['notes'],
-                    'issues': result['issues'],
+                    "decision": result["decision"],
+                    "notes": result["notes"],
+                    "issues": result["issues"],
                 },
                 snapshots=snapshots,
                 animation_gif=animation_gif,
@@ -512,15 +530,17 @@ class DicomQCTool:
         html = generator.generate_report(
             session_info=self.current_session,
             scan_results=prepared_results,
-            output_path=output_path
+            output_path=output_path,
         )
 
         if output_path:
-            display(HTML(f'''
+            display(
+                HTML(f"""
                 <div style="background:#d4edda; padding:15px; border-radius:8px; margin:10px 0;">
                     <p><strong>Report saved to:</strong> <code>{output_path}</code></p>
                 </div>
-            '''))
+            """)
+            )
 
         return html
 
@@ -542,11 +562,13 @@ class DicomQCTool:
         qc_report = self._get_qc_report(scan_info, volume)
 
         # Display info
-        display(HTML(f'''
+        display(
+            HTML(f"""
             <h3>Quick Check: {scan_info.id} - {scan_info.description}</h3>
             <p>{volume.modality} | {volume.num_slices} slices |
                {volume.pixel_spacing[0]:.2f} x {volume.pixel_spacing[1]:.2f} mm</p>
-        '''))
+        """)
+        )
 
         # Display QC results
         self._display_qc_results(qc_report)
@@ -557,12 +579,16 @@ class DicomQCTool:
         display(fig)
 
         # Generate and display animation
-        display(HTML('<h4>Slice Animation</h4>'))
+        display(HTML("<h4>Slice Animation</h4>"))
         anim_gen = AnimationGenerator(volume)
         gif_bytes = anim_gen.create_slice_animation(axis=0, fps=10)
         if gif_bytes:
             gif_b64 = anim_gen.to_base64(gif_bytes)
-            display(HTML(f'<img src="data:image/gif;base64,{gif_b64}" style="max-width:500px;">'))
+            display(
+                HTML(
+                    f'<img src="data:image/gif;base64,{gif_b64}" style="max-width:500px;">'
+                )
+            )
 
     def close(self):
         """Close XNAT connection."""

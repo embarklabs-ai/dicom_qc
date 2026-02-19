@@ -21,7 +21,7 @@ def _sanitize_filename(name: str) -> str:
     Returns:
         Filesystem-safe string
     """
-    return "".join(c if c.isalnum() or c in '-_' else '_' for c in str(name))
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(name))
 
 
 class ThumbnailCache:
@@ -149,7 +149,7 @@ class ThumbnailCache:
     @staticmethod
     def _looks_like_jpeg(data: bytes) -> bool:
         """Return True for byte payloads that look like complete JPEG files."""
-        return len(data) >= 4 and data[:2] == b'\xff\xd8' and b'\xff\xd9' in data[-16:]
+        return len(data) >= 4 and data[:2] == b"\xff\xd8" and b"\xff\xd9" in data[-16:]
 
     def save_jpeg_thumbnail_from_base64(
         self,
@@ -235,13 +235,13 @@ class ThumbnailCache:
         removed = 0
         for subdir in self.cache_dir.iterdir():
             if subdir.is_dir():
-                for thumb in subdir.rglob('*.jpg'):
+                for thumb in subdir.rglob("*.jpg"):
                     rel_path = str(thumb.relative_to(self.cache_dir))
                     if rel_path not in valid_paths:
                         thumb.unlink()
                         removed += 1
                 # Remove empty directories bottom-up
-                for dirpath in sorted(subdir.rglob('*'), reverse=True):
+                for dirpath in sorted(subdir.rglob("*"), reverse=True):
                     if dirpath.is_dir():
                         try:
                             dirpath.rmdir()
@@ -262,6 +262,6 @@ class ThumbnailCache:
         paths = set()
         for subdir in self.cache_dir.iterdir():
             if subdir.is_dir():
-                for thumb in subdir.rglob('*.jpg'):
+                for thumb in subdir.rglob("*.jpg"):
                     paths.add(str(thumb.relative_to(self.cache_dir)))
         return paths
