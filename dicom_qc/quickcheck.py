@@ -430,7 +430,6 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
     def _load_from_db(self):
         """Reconstruct self.patients hierarchy from the database."""
         from dicom_qc.core.geometry import QCResult, QCReport
-        from datetime import datetime
 
         rows = self._db.load_all()
         all_qc_results = self._db.load_all_qc_results()
@@ -614,7 +613,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         errors = sum(1 for s in all_series if s.error)
         pending = total_series - with_thumbnail - derived - errors
 
-        print(f"Loaded state from database")
+        print("Loaded state from database")
         status_parts = [f"{len(self.patients)} subjects", f"{total_series} series"]
         if pending > 0:
             status_parts.append(f"{pending} pending")
@@ -787,7 +786,6 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             refresh: If True, clear existing data and re-discover everything.
                      If False (default), preserve existing series that have thumbnails/results.
         """
-        import os
 
         # Store existing processed series to preserve them
         existing_series = {}
