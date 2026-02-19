@@ -937,56 +937,97 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         except Exception as e:
             series.error = f"Failed to fetch files: {e}"
 
+    @staticmethod
+    def _fetch_subject_hierarchy(subject: Any) -> tuple:
+        """Fetch experiment/scan hierarchy for one subject from XNAT.
+
+        Pure I/O operation with no state mutation, safe for parallel execution.
+
+        Args:
+            subject: XNAT subject object
+
+        Returns:
+            Tuple of (subject_label, xnat_subj_id, experiments_data) where
+            experiments_data is list of (session_label, xnat_exp_id, scans_list)
+        """
+        subject_label = subject.label
+        xnat_subj_id = getattr(subject, 'id', None)
+        experiments_data = []
+        try:
+            experiments = _xnat_retry(lambda: list(subject.experiments.values()))
+        except Exception:
+            return subject_label, xnat_subj_id, []
+        for experiment in experiments:
+            session_label = experiment.label
+            xnat_exp_id = getattr(experiment, 'id', None)
+            try:
+                scans = _xnat_retry(lambda: list(experiment.scans.values()))
+            except Exception:
+                scans = []
+            experiments_data.append((session_label, xnat_exp_id, scans))
+        return subject_label, xnat_subj_id, experiments_data
+
     def _collect_xnat_scan_tasks(self, subjects: List[Any], refresh: bool,
-                                  progress_callback=None) -> tuple:
+                                  progress_callback=None,
+                                  max_workers: int = 8) -> tuple:
         """Collect scan tasks from XNAT hierarchy.
 
-        Phase 1 of discovery: iterate through subjects/experiments/scans to build
-        task list for processing. This is done sequentially as it's fast.
+        Phase 1 of discovery: fetch subject/experiment/scan hierarchy from XNAT
+        (parallelized across subjects), then build task list for processing.
 
         Args:
             subjects: List of XNAT subject objects
             refresh: If True, include all scans. If False, skip scans with URIs.
-            progress_callback: Optional callback(subject_label, session_label, scan_id)
+            progress_callback: Optional callback(subjects_done, total_subjects, subject_label)
+            max_workers: Number of parallel workers for fetching
 
         Returns:
             Tuple of (scan_tasks, total_sessions, total_scans, skipped_scans)
             where scan_tasks is list of (subject_label, session_label, scan, study)
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # Step 1: Fetch all subject hierarchies in parallel (I/O-bound)
+        subject_results = []
+        use_parallel = max_workers > 1 and len(subjects) > 2
+        subjects_done = 0
+
+        if use_parallel:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(self._fetch_subject_hierarchy, s): s
+                           for s in subjects}
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        subject_results.append(result)
+                    except Exception:
+                        pass
+                    subjects_done += 1
+                    if progress_callback:
+                        label = result[0] if result else ''
+                        progress_callback(subjects_done, len(subjects), label)
+        else:
+            for subject in subjects:
+                result = self._fetch_subject_hierarchy(subject)
+                subject_results.append(result)
+                subjects_done += 1
+                if progress_callback:
+                    progress_callback(subjects_done, len(subjects), result[0])
+
+        # Step 2: Build hierarchy and collect scan tasks (sequential, fast)
         scan_tasks = []
         total_sessions = 0
         total_scans = 0
         skipped_scans = 0
 
-        for subject in subjects:
-            subject_label = subject.label
-            xnat_subj_id = getattr(subject, 'id', None)
+        for subject_label, xnat_subj_id, experiments_data in subject_results:
             patient = self._ensure_xnat_patient(subject_label, xnat_subj_id)
-
-            # Get experiments with retry
-            try:
-                experiments = _xnat_retry(lambda: list(subject.experiments.values()))
-            except Exception:
-                continue
-
-            for experiment in experiments:
-                session_label = experiment.label
+            for session_label, xnat_exp_id, scans in experiments_data:
                 total_sessions += 1
-                xnat_exp_id = getattr(experiment, 'id', None)
                 study = self._ensure_xnat_study(patient, session_label, xnat_exp_id)
-
-                # Get scans with retry
-                try:
-                    scans = _xnat_retry(lambda: list(experiment.scans.values()))
-                except Exception:
-                    continue
-
                 for scan in scans:
                     scan_id = scan.id
                     total_scans += 1
-
-                    if progress_callback:
-                        progress_callback(subject_label, session_label, scan_id)
 
                     # Skip existing scans in incremental mode
                     if not refresh and scan_id in study.series:
@@ -1155,21 +1196,19 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         if parallel is None:
             parallel = total_subjects > 2
 
-        # Phase 1: Collect all scan tasks (sequential, but with per-subject progress)
-        subject_index = {s.label: i + 1 for i, s in enumerate(subjects)}
-        subjects_seen = [0]
-        def _phase1_progress(subject_label, session_label, scan_id):
+        # Phase 1: Collect all scan tasks (parallel fetch from XNAT)
+        def _phase1_progress(subjects_done, subjects_total, subject_label):
             if progress_widget:
-                subjects_seen[0] = max(subjects_seen[0], subject_index.get(subject_label, subjects_seen[0]))
-                progress_widget.value = (subjects_seen[0] / total_subjects) * 50
+                progress_widget.value = (subjects_done / subjects_total) * 50
                 status_widget.value = (
                     f'<div class="qc-card qc-mono">'
-                    f'Collecting scan list... {subjects_seen[0]}/{total_subjects} subjects<br>'
-                    f'<span style="color:#888">{subject_label} / {session_label} / scan {scan_id}</span></div>'
+                    f'Collecting scan list... {subjects_done}/{subjects_total} subjects<br>'
+                    f'<span style="color:#888">{subject_label}</span></div>'
                 )
 
         scan_tasks, total_sessions, total_scans, skipped_scans = self._collect_xnat_scan_tasks(
-            subjects, refresh, progress_callback=_phase1_progress
+            subjects, refresh, progress_callback=_phase1_progress,
+            max_workers=max_workers,
         )
         total_scan_tasks = len(scan_tasks)
         new_scans = 0
