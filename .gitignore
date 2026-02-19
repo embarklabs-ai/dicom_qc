@@ -37,7 +37,7 @@ uv.lock
 .ipynb_checkpoints/
 
 # Ignore dev notebooks not already tracked
-examples/*-dev.ipynb 
+examples/*dev.ipynb 
 
 # Testing
 .pytest_cache/

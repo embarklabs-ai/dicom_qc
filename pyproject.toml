@@ -25,6 +25,8 @@ dependencies = [
     "pylibjpeg-openjpeg>=2.5.0",
     "imagecodecs>=2024.12.30",
     "glymur>=0.14.0.post1",
+    # For async progress updates in Jupyter
+    "nest_asyncio>=1.5.0",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +35,6 @@ xnat = [
 ]
 dev = [
     "pytest>=7.0.0",
-    "black",
     "ruff",
 ]
 
@@ -43,3 +44,9 @@ include = ["dicom_qc*"]
 
 [tool.setuptools.package-data]
 dicom_qc = ["reports/templates/*.html"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "ruff>=0.15.1",
+]

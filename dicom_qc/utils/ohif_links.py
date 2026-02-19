@@ -13,13 +13,9 @@ class OHIFLinkGenerator:
         Args:
             xnat_base_url: Base URL of XNAT server (e.g., 'https://xnat.example.org')
         """
-        self.base_url = xnat_base_url.rstrip('/')
+        self.base_url = xnat_base_url.rstrip("/")
 
-    def generate_session_link(
-        self,
-        project: str,
-        experiment_id: str
-    ) -> str:
+    def generate_session_link(self, project: str, experiment_id: str) -> str:
         """
         Generate OHIF link for an entire session.
 
@@ -33,18 +29,10 @@ class OHIFLinkGenerator:
         Returns:
             Full OHIF viewer URL
         """
-        params = {
-            'project': project,
-            'experimentId': experiment_id
-        }
+        params = {"project": project, "experimentId": experiment_id}
         return f"{self.base_url}/VIEWER?{urlencode(params)}"
 
-    def generate_scan_link(
-        self,
-        project: str,
-        experiment_id: str,
-        scan_id: str
-    ) -> str:
+    def generate_scan_link(self, project: str, experiment_id: str, scan_id: str) -> str:
         """
         Generate OHIF link for a specific scan.
 
@@ -59,17 +47,11 @@ class OHIFLinkGenerator:
         Returns:
             Full OHIF viewer URL with scan pre-selected
         """
-        params = {
-            'project': project,
-            'experimentId': experiment_id,
-            'scanId': scan_id
-        }
+        params = {"project": project, "experimentId": experiment_id, "scanId": scan_id}
         return f"{self.base_url}/VIEWER?{urlencode(params)}"
 
     def generate_dicomweb_link(
-        self,
-        study_instance_uid: str,
-        series_instance_uid: str = None
+        self, study_instance_uid: str, series_instance_uid: str = None
     ) -> str:
         """
         Generate OHIF link using DICOM UIDs (for DICOMweb-native access).
@@ -87,10 +69,10 @@ class OHIFLinkGenerator:
         Returns:
             OHIF viewer URL
         """
-        params = {'StudyInstanceUIDs': study_instance_uid}
+        params = {"StudyInstanceUIDs": study_instance_uid}
 
         if series_instance_uid:
-            params['SeriesInstanceUID'] = series_instance_uid
+            params["SeriesInstanceUID"] = series_instance_uid
 
         return f"{self.base_url}/ohif/viewer?{urlencode(params)}"
 
@@ -99,7 +81,7 @@ class OHIFLinkGenerator:
         project: str,
         experiment_id: str,
         scan_id: str = None,
-        link_text: str = "View in OHIF"
+        link_text: str = "View in OHIF",
     ) -> str:
         """Generate markdown-formatted link for reports."""
         if scan_id:
@@ -114,7 +96,7 @@ class OHIFLinkGenerator:
         project: str,
         experiment_id: str,
         scan_id: str = None,
-        button_text: str = "View in OHIF"
+        button_text: str = "View in OHIF",
     ) -> str:
         """Generate HTML button for reports."""
         if scan_id:

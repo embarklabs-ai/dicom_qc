@@ -30,12 +30,15 @@ __all__ = [
     "DicomQCError",
 ]
 
+
 # Lazy import of main tools to avoid loading all dependencies at import time
 def __getattr__(name):
     if name == "DicomQCTool":
         from dicom_qc.tool import DicomQCTool
+
         return DicomQCTool
     if name == "QuickCheck":
         from dicom_qc.quickcheck import QuickCheck
+
         return QuickCheck
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

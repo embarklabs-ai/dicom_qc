@@ -1,4 +1,4 @@
-"""Generate static PNG snapshots for QC review."""
+"""Generate static JPEG snapshots for QC review."""
 
 from io import BytesIO
 import base64
@@ -8,12 +8,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 
-from dicom_qc.core.volume import DicomVolume
 from dicom_qc.visualization.base import VolumeRenderer
 
 
 class SnapshotGenerator(VolumeRenderer):
-    """Generate static PNG snapshots for QC review."""
+    """Generate static JPEG snapshots for QC review."""
 
     def get_center_slices(self) -> Dict[str, np.ndarray]:
         """
@@ -23,7 +22,7 @@ class SnapshotGenerator(VolumeRenderer):
             Dict with 'axial', 'sagittal', 'coronal' keys containing windowed images
         """
         result = {}
-        for view in ['axial', 'coronal', 'sagittal']:
+        for view in ["axial", "coronal", "sagittal"]:
             num_slices = self.get_num_slices(view)
             center_idx = num_slices // 2
             result[view] = self.apply_window(self.extract_slice(view, center_idx))
@@ -35,7 +34,7 @@ class SnapshotGenerator(VolumeRenderer):
         slice_index: Optional[int] = None,
         figsize: Tuple[int, int] = (6, 6),
         show_labels: bool = True,
-        save_path: Optional[str] = None
+        save_path: Optional[str] = None,
     ) -> Figure:
         """
         Create a single view image.
@@ -56,26 +55,28 @@ class SnapshotGenerator(VolumeRenderer):
 
         fig, ax = plt.subplots(figsize=figsize)
 
-        if view == 'mip':
-            img = self.generate_mip(plane='sagittal')
-            aspect = self.calculate_aspect_ratio('sagittal')
-            origin = self.get_image_origin('sagittal')
-            title = 'Maximum Intensity Projection'
-            label_view = 'sagittal'
-        elif view in ('axial', 'coronal', 'sagittal'):
+        if view == "mip":
+            img = self.generate_mip(plane="sagittal")
+            aspect = self.calculate_aspect_ratio("sagittal")
+            origin = self.get_image_origin("sagittal")
+            title = "Maximum Intensity Projection"
+            label_view = "sagittal"
+        elif view in ("axial", "coronal", "sagittal"):
             num_slices = self.get_num_slices(view)
             idx = slice_index if slice_index is not None else num_slices // 2
             img = self.apply_window(self.extract_slice(view, idx))
             aspect = self.calculate_aspect_ratio(view)
             origin = self.get_image_origin(view)
-            title = f'{view.capitalize()} (Slice {idx + 1}/{num_slices})'
+            title = f"{view.capitalize()} (Slice {idx + 1}/{num_slices})"
             label_view = view
         else:
             raise ValueError(f"Unknown view: {view}")
 
-        ax.imshow(img, cmap='gray', aspect=aspect, origin=origin, interpolation='bilinear')
+        ax.imshow(
+            img, cmap="gray", aspect=aspect, origin=origin, interpolation="bilinear"
+        )
         ax.set_title(title, fontsize=12)
-        ax.axis('off')
+        ax.axis("off")
 
         if show_labels:
             self.add_orientation_labels(ax, label_view)
@@ -83,7 +84,7 @@ class SnapshotGenerator(VolumeRenderer):
         fig.tight_layout()
 
         if save_path:
-            fig.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='black')
+            fig.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="black")
 
         # Restore interactive mode
         if was_interactive:
@@ -92,9 +93,7 @@ class SnapshotGenerator(VolumeRenderer):
         return fig
 
     def create_orientation_figure(
-        self,
-        figsize: Tuple[int, int] = (12, 10),
-        save_path: Optional[str] = None
+        self, figsize: Tuple[int, int] = (12, 10), save_path: Optional[str] = None
     ) -> Figure:
         """
         Create multi-panel figure with center slices and orientation labels.
@@ -116,43 +115,45 @@ class SnapshotGenerator(VolumeRenderer):
             matplotlib Figure
         """
         slices = self.get_center_slices()
-        mip = self.generate_mip(plane='sagittal')
+        mip = self.generate_mip(plane="sagittal")
 
         # Disable interactive mode to prevent auto-display
         was_interactive = plt.isinteractive()
         plt.ioff()
 
-        fig, axes = plt.subplots(2, 2, figsize=figsize, facecolor='black')
+        fig, axes = plt.subplots(2, 2, figsize=figsize, facecolor="black")
         fig.suptitle(
-            f'{self.volume.modality}: {self.volume.series_description}',
-            color='white',
-            fontsize=14
+            f"{self.volume.modality}: {self.volume.series_description}",
+            color="white",
+            fontsize=14,
         )
 
         # Standard layout: Axial, Coronal, Sagittal, MIP
         panels = [
-            ('Axial', slices['axial'], axes[0, 0], 'axial'),
-            ('Coronal', slices['coronal'], axes[0, 1], 'coronal'),
-            ('Sagittal', slices['sagittal'], axes[1, 0], 'sagittal'),
-            ('MIP', mip, axes[1, 1], 'sagittal'),
+            ("Axial", slices["axial"], axes[0, 0], "axial"),
+            ("Coronal", slices["coronal"], axes[0, 1], "coronal"),
+            ("Sagittal", slices["sagittal"], axes[1, 0], "sagittal"),
+            ("MIP", mip, axes[1, 1], "sagittal"),
         ]
 
         for title, img, ax, label_view in panels:
             aspect = self.calculate_aspect_ratio(label_view)
             origin = self.get_image_origin(label_view)
 
-            ax.imshow(img, cmap='gray', aspect=aspect, origin=origin, interpolation='bilinear')
-            ax.set_facecolor('black')
-            ax.axis('off')
+            ax.imshow(
+                img, cmap="gray", aspect=aspect, origin=origin, interpolation="bilinear"
+            )
+            ax.set_facecolor("black")
+            ax.axis("off")
 
             # Add title with slice info
-            if title == 'MIP':
-                subtitle = 'Through slices'
+            if title == "MIP":
+                subtitle = "Through slices"
             else:
                 num_slices = self.get_num_slices(title.lower())
-                subtitle = f'Slice {num_slices // 2 + 1}/{num_slices}'
+                subtitle = f"Slice {num_slices // 2 + 1}/{num_slices}"
 
-            ax.set_title(f'{title}\n{subtitle}', color='white', fontsize=11)
+            ax.set_title(f"{title}\n{subtitle}", color="white", fontsize=11)
 
             # Add orientation labels
             self.add_orientation_labels(ax, label_view)
@@ -160,7 +161,7 @@ class SnapshotGenerator(VolumeRenderer):
         fig.tight_layout()
 
         if save_path:
-            fig.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='black')
+            fig.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="black")
 
         # Restore interactive mode
         if was_interactive:
@@ -168,29 +169,24 @@ class SnapshotGenerator(VolumeRenderer):
 
         return fig
 
-    def to_base64(self, fig: Figure, format: str = 'png') -> str:
+    def to_base64(self, fig: Figure, format: str = "jpeg") -> str:
         """Convert matplotlib figure to base64 encoded string."""
         buffer = BytesIO()
         fig.savefig(
-            buffer,
-            format=format,
-            dpi=150,
-            bbox_inches='tight',
-            facecolor='black'
+            buffer, format=format, dpi=150, bbox_inches="tight", facecolor="black"
         )
         buffer.seek(0)
-        encoded = base64.b64encode(buffer.read()).decode('utf-8')
+        encoded = base64.b64encode(buffer.read()).decode("utf-8")
         plt.close(fig)
         return encoded
 
-    def create_tripane_thumbnail(
+    def _create_tripane_figure(
         self,
         figsize: Tuple[float, float] = (4.5, 1.5),
         dpi: int = 75,
-        show_labels: bool = True
-    ) -> str:
-        """
-        Create a compact 3-pane thumbnail (axial, coronal, sagittal) as base64.
+        show_labels: bool = True,
+    ) -> Figure:
+        """Create the 3-pane thumbnail figure with axial, coronal, sagittal views.
 
         Args:
             figsize: Figure size in inches (width, height)
@@ -198,15 +194,12 @@ class SnapshotGenerator(VolumeRenderer):
             show_labels: Whether to show A/C/S labels
 
         Returns:
-            Base64 encoded PNG string
+            matplotlib Figure ready to be saved
         """
-        was_interactive = plt.isinteractive()
-        plt.ioff()
-
-        views = ['axial', 'coronal', 'sagittal']
+        views = ["axial", "coronal", "sagittal"]
 
         fig, axes = plt.subplots(1, 3, figsize=figsize, dpi=dpi)
-        fig.patch.set_facecolor('black')
+        fig.patch.set_facecolor("black")
 
         for ax, view in zip(axes, views):
             num_slices = self.get_num_slices(view)
@@ -215,25 +208,114 @@ class SnapshotGenerator(VolumeRenderer):
             aspect = self.calculate_aspect_ratio(view)
             origin = self.get_image_origin(view)
 
-            ax.imshow(img, cmap='gray', aspect=aspect, origin=origin, interpolation='bilinear')
-            ax.axis('off')
-            ax.set_facecolor('black')
+            ax.imshow(
+                img, cmap="gray", aspect=aspect, origin=origin, interpolation="bilinear"
+            )
+            ax.axis("off")
+            ax.set_facecolor("black")
             if show_labels:
-                ax.text(0.5, 0.02, view[0].upper(), transform=ax.transAxes,
-                       fontsize=8, color='white', ha='center', va='bottom',
-                       bbox=dict(boxstyle='round,pad=0.1', facecolor='black', alpha=0.5))
+                ax.text(
+                    0.5,
+                    0.02,
+                    view[0].upper(),
+                    transform=ax.transAxes,
+                    fontsize=8,
+                    color="white",
+                    ha="center",
+                    va="bottom",
+                    bbox=dict(boxstyle="round,pad=0.1", facecolor="black", alpha=0.5),
+                )
 
         plt.subplots_adjust(wspace=0.02, left=0, right=1, top=1, bottom=0)
+        return fig
+
+    def create_tripane_thumbnail(
+        self,
+        figsize: Tuple[float, float] = (4.5, 1.5),
+        dpi: int = 75,
+        quality: int = 85,
+        show_labels: bool = True,
+    ) -> str:
+        """Create a compact 3-pane thumbnail (axial, coronal, sagittal) as base64.
+
+        Args:
+            figsize: Figure size in inches (width, height)
+            dpi: Resolution
+            quality: JPEG quality (1-100)
+            show_labels: Whether to show A/C/S labels
+
+        Returns:
+            Base64 encoded JPEG string
+        """
+        was_interactive = plt.isinteractive()
+        plt.ioff()
+
+        fig = self._create_tripane_figure(figsize, dpi, show_labels)
 
         buf = BytesIO()
-        fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.02, facecolor='black')
+        fig.savefig(
+            buf,
+            format="jpeg",
+            bbox_inches="tight",
+            pad_inches=0.02,
+            facecolor="black",
+            pil_kwargs={"quality": quality},
+        )
         plt.close(fig)
         buf.seek(0)
 
         if was_interactive:
             plt.ion()
 
-        return base64.b64encode(buf.read()).decode('utf-8')
+        return base64.b64encode(buf.read()).decode("utf-8")
+
+    def create_tripane_thumbnail_file(
+        self,
+        output_path,
+        figsize: Tuple[float, float] = (4.5, 1.5),
+        dpi: int = 75,
+        quality: int = 85,
+        show_labels: bool = True,
+    ):
+        """Create a compact 3-pane thumbnail saved to a JPEG file.
+
+        This is the preferred method for large-scale processing (100K+ series)
+        as it avoids storing base64 strings in memory.
+
+        Args:
+            output_path: Path to save JPEG file (str or Path)
+            figsize: Figure size in inches (width, height)
+            dpi: Resolution
+            quality: JPEG quality (1-100)
+            show_labels: Whether to show A/C/S labels
+
+        Returns:
+            Path to saved thumbnail file
+        """
+        from pathlib import Path
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        was_interactive = plt.isinteractive()
+        plt.ioff()
+
+        fig = self._create_tripane_figure(figsize, dpi, show_labels)
+
+        fig.savefig(
+            output_path,
+            format="jpeg",
+            bbox_inches="tight",
+            pad_inches=0.02,
+            facecolor="black",
+            pil_kwargs={"quality": quality},
+        )
+        plt.close(fig)
+
+        if was_interactive:
+            plt.ion()
+
+        return output_path
 
     def generate_all_snapshots(self) -> Dict[str, str]:
         """
@@ -246,10 +328,10 @@ class SnapshotGenerator(VolumeRenderer):
         snapshots = {}
 
         # Individual views - skip views that would be degenerate (single slice)
-        for view in ['axial', 'coronal', 'sagittal', 'mip']:
-            if view == 'mip':
+        for view in ["axial", "coronal", "sagittal", "mip"]:
+            if view == "mip":
                 # MIP needs at least 2 slices in sagittal direction
-                if self.get_num_slices('sagittal') < 2:
+                if self.get_num_slices("sagittal") < 2:
                     snapshots[view] = None
                     continue
             else:
@@ -267,8 +349,8 @@ class SnapshotGenerator(VolumeRenderer):
         # Overview figure
         try:
             fig = self.create_orientation_figure()
-            snapshots['overview'] = self.to_base64(fig)
+            snapshots["overview"] = self.to_base64(fig)
         except Exception:
-            snapshots['overview'] = None
+            snapshots["overview"] = None
 
         return snapshots

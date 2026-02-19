@@ -368,25 +368,25 @@
             <div class="image-grid">
                 {% if scan.axial_image %}
                 <div class="image-container">
-                    <img src="data:image/png;base64,{{ scan.axial_image }}" alt="Axial View">
+                    <img src="data:image/jpeg;base64,{{ scan.axial_image }}" alt="Axial View">
                     <div class="image-label">Axial (Center Slice)</div>
                 </div>
                 {% endif %}
                 {% if scan.coronal_image %}
                 <div class="image-container">
-                    <img src="data:image/png;base64,{{ scan.coronal_image }}" alt="Coronal View">
+                    <img src="data:image/jpeg;base64,{{ scan.coronal_image }}" alt="Coronal View">
                     <div class="image-label">Coronal (Center Slice)</div>
                 </div>
                 {% endif %}
                 {% if scan.sagittal_image %}
                 <div class="image-container">
-                    <img src="data:image/png;base64,{{ scan.sagittal_image }}" alt="Sagittal View">
+                    <img src="data:image/jpeg;base64,{{ scan.sagittal_image }}" alt="Sagittal View">
                     <div class="image-label">Sagittal (Center Slice)</div>
                 </div>
                 {% endif %}
                 {% if scan.mip_image %}
                 <div class="image-container">
-                    <img src="data:image/png;base64,{{ scan.mip_image }}" alt="MIP">
+                    <img src="data:image/jpeg;base64,{{ scan.mip_image }}" alt="MIP">
                     <div class="image-label">Maximum Intensity Projection</div>
                 </div>
                 {% endif %}

@@ -1,7 +1,6 @@
 """Setup script for dicom_qc package."""
 
 from setuptools import setup, find_packages
-from pathlib import Path
 
 # Read requirements
 requirements = [

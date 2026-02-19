@@ -46,9 +46,11 @@ Main entry point for batch review:
 ```python
 qc = QuickCheck(data_dir)
 qc.discover()           # Scan for DICOM files, build hierarchy
-qc.process_all()        # Run QC checks, generate thumbnails
+qc.process_all()        # Run QC checks (parallel, auto-save)
 qc.generate_html_report(path)  # Export HTML report
-qc.display()            # Interactive Jupyter dashboard
+qc.display()            # Interactive Jupyter dashboard (paginated)
+qc.save()               # Save state (auto-saves during processing)
+qc.reset()              # Clear everything and start fresh
 ```
 
 ### DicomVolume (core/volume.py)
@@ -86,11 +88,11 @@ Interactive 3-pane viewer for Jupyter:
 5. Orientation Consistency - valid unit vectors
 6. Frame of Reference - slices coplanar
 7. Gap Detection - missing slices, irregular spacing
-8. Voxel Anisotropy - ratio > 4x = FAIL, > 2x = WARNING
+8. Voxel Anisotropy - ratio > 2x = WARNING
 9. Slice Count - truncation detection
 
 **DICOM-level checks (per series):**
-10. JPEG-2000 Encoding - multi-layer issues (OHIF blur)
+10. JPEG-2000 Encoding - flags J2K transfer syntax (some render blurry in OHIF)
 11. Temporal Metadata - missing timing for perfusion series
 
 ## Viewer Compatibility Notes
@@ -157,7 +159,7 @@ jupyter notebook examples/local.ipynb
 
 **Horizontal scroll in viewer**: Check `overflow='hidden'` on widget layouts
 
-**Blurry images in OHIF**: Check for multi-layer JPEG-2000 encoding
+**Blurry images in OHIF**: Some JPEG-2000 encoded data renders blurry; root cause not yet identified
 
 **Slice thickness mismatch**: SliceThickness tag vs calculated spacing from positions - both shown when different
 
@@ -165,4 +167,28 @@ jupyter notebook examples/local.ipynb
 
 - DICOM files: `*.dcm` in data directory
 - HTML reports: `*_report.html` in output directory
-- Thumbnails: Base64-encoded PNG in memory (not saved to disk)
+- Save files: `quickcheck_state.pkl` (pickle format)
+
+## Storage (Scaled Mode)
+
+For large projects, QuickCheck uses disk-based storage in `{data_dir}/_dicom_qc/`:
+
+```
+_dicom_qc/
+├── qc_database.sqlite3   # SQLite database (series metadata, QC results)
+├── thumbnails/           # JPEG thumbnails (~10KB each)
+│   ├── ab/
+│   │   └── abc123def456.jpg
+│   └── cd/
+│       └── cde789ghi012.jpg
+```
+
+**Benefits at scale:**
+- Memory: ~50MB vs 1-5GB for 100K series (thumbnails on disk, not base64 in memory)
+- UI: <500ms filter/pagination vs 30-60s full re-render
+- Processing: Parallel with auto-save (resume on crash)
+
+**To start fresh:**
+```python
+qc.reset()  # Deletes _dicom_qc/ directory and clears state
+```

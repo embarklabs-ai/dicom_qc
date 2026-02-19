@@ -6,6 +6,7 @@ import numpy as np
 
 try:
     import SimpleITK as sitk
+
     HAS_SIMPLEITK = True
 except ImportError:
     HAS_SIMPLEITK = False
@@ -47,8 +48,8 @@ class DicomVolume:
     def __init__(
         self,
         sitk_image: Any,
-        modality: str = 'Unknown',
-        series_description: str = '',
+        modality: str = "Unknown",
+        series_description: str = "",
         patient_position: Optional[str] = None,
         study_instance_uid: Optional[str] = None,
         series_instance_uid: Optional[str] = None,
@@ -75,7 +76,9 @@ class DicomVolume:
             missing_geometry_tags: List of missing DICOM geometry tags (PixelSpacing, etc.)
         """
         if not HAS_SIMPLEITK:
-            raise ImportError("SimpleITK is required. Install with: pip install SimpleITK")
+            raise ImportError(
+                "SimpleITK is required. Install with: pip install SimpleITK"
+            )
 
         self.sitk_image = sitk_image
         self.modality = modality
@@ -97,7 +100,9 @@ class DicomVolume:
     def pixel_array(self) -> np.ndarray:
         """3D numpy array [slices, rows, cols] - derived from sitk_image."""
         if self._pixel_array is None:
-            self._pixel_array = sitk.GetArrayFromImage(self.sitk_image).astype(np.float32)
+            self._pixel_array = sitk.GetArrayFromImage(self.sitk_image).astype(
+                np.float32
+            )
         return self._pixel_array
 
     @property
@@ -207,7 +212,9 @@ class DicomVolume:
         """Get the SimpleITK image for this volume."""
         return self.sitk_image
 
-    def get_reoriented_slices(self) -> Tuple[np.ndarray, Tuple[float, float, float], Any]:
+    def get_reoriented_slices(
+        self,
+    ) -> Tuple[np.ndarray, Tuple[float, float, float], Any]:
         """
         Get properly oriented slices for axial, coronal, and sagittal views.
 
@@ -218,7 +225,7 @@ class DicomVolume:
         """
         # Reorient to LPS (standard DICOM/radiological orientation)
         orient_filter = sitk.DICOMOrientImageFilter()
-        orient_filter.SetDesiredCoordinateOrientation('LPS')
+        orient_filter.SetDesiredCoordinateOrientation("LPS")
         lps_image = orient_filter.Execute(self.sitk_image)
 
         # Get array and spacing
@@ -239,7 +246,10 @@ class DicomVolume:
         if self._lps_cache is None:
             lps_array, lps_spacing, _ = self.get_reoriented_slices()
             # lps_spacing from SimpleITK is (L, P, S), convert to (S, P, L)
-            self._lps_cache = (lps_array, (lps_spacing[2], lps_spacing[1], lps_spacing[0]))
+            self._lps_cache = (
+                lps_array,
+                (lps_spacing[2], lps_spacing[1], lps_spacing[0]),
+            )
         return self._lps_cache
 
     def get_intensity_range(self) -> Tuple[float, float]:
@@ -250,7 +260,7 @@ class DicomVolume:
     def get_auto_window(self) -> Tuple[float, float]:
         """Calculate automatic window (center, width) based on modality and image statistics."""
         # For CT, use standard soft tissue window as default
-        if self.modality == 'CT':
+        if self.modality == "CT":
             return (40.0, 400.0)
 
         # For MR and other modalities, use percentile-based windowing
@@ -277,20 +287,20 @@ class DicomVolume:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         result = {
-            'shape': self.shape,
-            'num_slices': self.num_slices,
-            'pixel_spacing': self.pixel_spacing,
-            'slice_thickness': self.slice_thickness,
-            'voxel_spacing': self.voxel_spacing,
-            'modality': self.modality,
-            'series_description': self.series_description,
-            'patient_position': self.patient_position,
-            'study_instance_uid': self.study_instance_uid,
-            'series_instance_uid': self.series_instance_uid,
-            'image_orientation': self.image_orientation.tolist(),
-            'intensity_range': self.get_intensity_range(),
+            "shape": self.shape,
+            "num_slices": self.num_slices,
+            "pixel_spacing": self.pixel_spacing,
+            "slice_thickness": self.slice_thickness,
+            "voxel_spacing": self.voxel_spacing,
+            "modality": self.modality,
+            "series_description": self.series_description,
+            "patient_position": self.patient_position,
+            "study_instance_uid": self.study_instance_uid,
+            "series_instance_uid": self.series_instance_uid,
+            "image_orientation": self.image_orientation.tolist(),
+            "intensity_range": self.get_intensity_range(),
         }
         if self.num_timepoints is not None:
-            result['num_timepoints'] = self.num_timepoints
-            result['is_4d'] = True
+            result["num_timepoints"] = self.num_timepoints
+            result["is_4d"] = True
         return result

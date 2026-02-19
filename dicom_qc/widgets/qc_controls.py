@@ -11,14 +11,14 @@ class QCControls:
 
     # Predefined issue types
     ISSUE_TYPES = [
-        'Slice ordering issue',
-        'Missing slices / gaps',
-        'Orientation mismatch',
-        'Image quality issue',
-        'Wrong protocol',
-        'Incomplete series',
-        'Artifacts present',
-        'Other (see notes)',
+        "Slice ordering issue",
+        "Missing slices / gaps",
+        "Orientation mismatch",
+        "Image quality issue",
+        "Wrong protocol",
+        "Incomplete series",
+        "Artifacts present",
+        "Other (see notes)",
     ]
 
     def __init__(self):
@@ -34,37 +34,37 @@ class QCControls:
         """Create all widgets."""
         # Decision buttons
         self.pass_button = widgets.Button(
-            description='PASS',
-            button_style='success',
-            icon='check',
-            layout=widgets.Layout(width='100px')
+            description="PASS",
+            button_style="success",
+            icon="check",
+            layout=widgets.Layout(width="100px"),
         )
 
         self.fail_button = widgets.Button(
-            description='FAIL',
-            button_style='danger',
-            icon='times',
-            layout=widgets.Layout(width='100px')
+            description="FAIL",
+            button_style="danger",
+            icon="times",
+            layout=widgets.Layout(width="100px"),
         )
 
         self.flag_button = widgets.Button(
-            description='FLAG',
-            button_style='warning',
-            icon='flag',
-            layout=widgets.Layout(width='100px')
+            description="FLAG",
+            button_style="warning",
+            icon="flag",
+            layout=widgets.Layout(width="100px"),
         )
 
         self.skip_button = widgets.Button(
-            description='Skip',
-            button_style='',
-            icon='forward',
-            layout=widgets.Layout(width='100px')
+            description="Skip",
+            button_style="",
+            icon="forward",
+            layout=widgets.Layout(width="100px"),
         )
 
         # Notes field
         self.notes_text = widgets.Textarea(
-            placeholder='Enter QC notes here...',
-            layout=widgets.Layout(width='100%', height='80px')
+            placeholder="Enter QC notes here...",
+            layout=widgets.Layout(width="100%", height="80px"),
         )
 
         # Issue checkboxes
@@ -74,7 +74,7 @@ class QCControls:
                 value=False,
                 description=issue,
                 indent=False,
-                layout=widgets.Layout(width='auto')
+                layout=widgets.Layout(width="auto"),
             )
             self.issue_checkboxes.append(cb)
 
@@ -85,53 +85,52 @@ class QCControls:
 
         # Next button (after decision)
         self.next_button = widgets.Button(
-            description='Next Scan',
-            button_style='primary',
-            icon='arrow-right',
+            description="Next Scan",
+            button_style="primary",
+            icon="arrow-right",
             disabled=True,
-            layout=widgets.Layout(width='120px')
+            layout=widgets.Layout(width="120px"),
         )
 
     def _setup_handlers(self):
         """Set up button handlers."""
-        self.pass_button.on_click(lambda b: self._set_decision('PASS'))
-        self.fail_button.on_click(lambda b: self._set_decision('FAIL'))
-        self.flag_button.on_click(lambda b: self._set_decision('FLAG'))
-        self.skip_button.on_click(lambda b: self._set_decision('SKIP'))
+        self.pass_button.on_click(lambda b: self._set_decision("PASS"))
+        self.fail_button.on_click(lambda b: self._set_decision("FAIL"))
+        self.flag_button.on_click(lambda b: self._set_decision("FLAG"))
+        self.skip_button.on_click(lambda b: self._set_decision("SKIP"))
 
     def display(self):
         """Display the QC controls."""
         header = widgets.HTML('<h3 style="margin-bottom: 10px;">QC Decision</h3>')
 
-        buttons = widgets.HBox([
-            self.pass_button,
-            self.fail_button,
-            self.flag_button,
-            self.skip_button
-        ], layout=widgets.Layout(margin='10px 0'))
+        buttons = widgets.HBox(
+            [self.pass_button, self.fail_button, self.flag_button, self.skip_button],
+            layout=widgets.Layout(margin="10px 0"),
+        )
 
-        issues_label = widgets.HTML('<b>Common Issues:</b>')
+        issues_label = widgets.HTML("<b>Common Issues:</b>")
         issues_box = widgets.VBox(
             self.issue_checkboxes,
             layout=widgets.Layout(
-                padding='5px 0',
-                max_height='200px',
-                overflow_y='auto'
-            )
+                padding="5px 0", max_height="200px", overflow_y="auto"
+            ),
         )
 
-        notes_label = widgets.HTML('<b>Notes:</b>')
+        notes_label = widgets.HTML("<b>Notes:</b>")
 
-        container = widgets.VBox([
-            header,
-            buttons,
-            self.status_label,
-            issues_label,
-            issues_box,
-            notes_label,
-            self.notes_text,
-            widgets.HBox([self.next_button]),
-        ], layout=widgets.Layout(padding='10px', width='350px'))
+        container = widgets.VBox(
+            [
+                header,
+                buttons,
+                self.status_label,
+                issues_label,
+                issues_box,
+                notes_label,
+                self.notes_text,
+                widgets.HBox([self.next_button]),
+            ],
+            layout=widgets.Layout(padding="10px", width="350px"),
+        )
 
         display(container)
 
@@ -153,29 +152,24 @@ class QCControls:
         self._decision_time = datetime.now()
 
         # Update button styles to show selection
-        self.pass_button.button_style = 'success' if decision == 'PASS' else ''
-        self.fail_button.button_style = 'danger' if decision == 'FAIL' else ''
-        self.flag_button.button_style = 'warning' if decision == 'FLAG' else ''
-        self.skip_button.button_style = 'info' if decision == 'SKIP' else ''
+        self.pass_button.button_style = "success" if decision == "PASS" else ""
+        self.fail_button.button_style = "danger" if decision == "FAIL" else ""
+        self.flag_button.button_style = "warning" if decision == "FLAG" else ""
+        self.skip_button.button_style = "info" if decision == "SKIP" else ""
 
         # Update status label
-        colors = {
-            'PASS': 'green',
-            'FAIL': 'red',
-            'FLAG': 'orange',
-            'SKIP': 'gray'
-        }
+        colors = {"PASS": "green", "FAIL": "red", "FLAG": "orange", "SKIP": "gray"}
         icons = {
-            'PASS': '&#10003;',  # checkmark
-            'FAIL': '&#10007;',  # x
-            'FLAG': '&#9873;',   # flag
-            'SKIP': '&#8594;'    # arrow
+            "PASS": "&#10003;",  # checkmark
+            "FAIL": "&#10007;",  # x
+            "FLAG": "&#9873;",  # flag
+            "SKIP": "&#8594;",  # arrow
         }
-        self.status_label.value = f'''
+        self.status_label.value = f"""
             <span style="color:{colors[decision]}; font-weight:bold; font-size:1.2em;">
                 {icons[decision]} {decision}
             </span>
-        '''
+        """
 
         # Enable next button
         self.next_button.disabled = False
@@ -189,36 +183,37 @@ class QCControls:
 
     def get_selected_issues(self) -> List[str]:
         """Get list of selected issue types."""
-        return [
-            cb.description for cb in self.issue_checkboxes
-            if cb.value
-        ]
+        return [cb.description for cb in self.issue_checkboxes if cb.value]
 
     def reset(self):
         """Reset controls for next scan."""
         self.current_decision = None
         self._decision_time = None
-        self.notes_text.value = ''
+        self.notes_text.value = ""
 
         for cb in self.issue_checkboxes:
             cb.value = False
 
         # Reset button styles
-        self.pass_button.button_style = 'success'
-        self.fail_button.button_style = 'danger'
-        self.flag_button.button_style = 'warning'
-        self.skip_button.button_style = ''
+        self.pass_button.button_style = "success"
+        self.fail_button.button_style = "danger"
+        self.flag_button.button_style = "warning"
+        self.skip_button.button_style = ""
 
-        self.status_label.value = '<span style="color:gray; font-style:italic;">No decision yet</span>'
+        self.status_label.value = (
+            '<span style="color:gray; font-style:italic;">No decision yet</span>'
+        )
         self.next_button.disabled = True
 
     def get_decision(self) -> Dict:
         """Get current decision data."""
         return {
-            'decision': self.current_decision,
-            'notes': self.notes_text.value,
-            'issues': self.get_selected_issues(),
-            'timestamp': self._decision_time.isoformat() if self._decision_time else None,
+            "decision": self.current_decision,
+            "notes": self.notes_text.value,
+            "issues": self.get_selected_issues(),
+            "timestamp": self._decision_time.isoformat()
+            if self._decision_time
+            else None,
         }
 
     def set_enabled(self, enabled: bool):

@@ -25,62 +25,60 @@ class SessionBrowser:
         # Create widgets
         self.project_dropdown = widgets.Dropdown(
             options=[],
-            description='Project:',
-            layout=widgets.Layout(width='400px'),
-            style={'description_width': '80px'}
+            description="Project:",
+            layout=widgets.Layout(width="400px"),
+            style={"description_width": "80px"},
         )
 
         self.subject_dropdown = widgets.Dropdown(
             options=[],
-            description='Subject:',
+            description="Subject:",
             disabled=True,
-            layout=widgets.Layout(width='400px'),
-            style={'description_width': '80px'}
+            layout=widgets.Layout(width="400px"),
+            style={"description_width": "80px"},
         )
 
         self.experiment_dropdown = widgets.Dropdown(
             options=[],
-            description='Session:',
+            description="Session:",
             disabled=True,
-            layout=widgets.Layout(width='400px'),
-            style={'description_width': '80px'}
+            layout=widgets.Layout(width="400px"),
+            style={"description_width": "80px"},
         )
 
         self.scan_dropdown = widgets.Dropdown(
             options=[],
-            description='Scan:',
+            description="Scan:",
             disabled=True,
-            layout=widgets.Layout(width='500px'),
-            style={'description_width': '80px'}
+            layout=widgets.Layout(width="500px"),
+            style={"description_width": "80px"},
         )
 
         self.load_button = widgets.Button(
-            description='Load Scan',
-            button_style='primary',
+            description="Load Scan",
+            button_style="primary",
             disabled=True,
-            icon='download'
+            icon="download",
         )
 
         self.load_all_button = widgets.Button(
-            description='Load All Scans',
-            button_style='info',
+            description="Load All Scans",
+            button_style="info",
             disabled=True,
-            icon='folder-open'
+            icon="folder-open",
         )
 
         self.refresh_button = widgets.Button(
-            description='Refresh',
-            button_style='',
-            icon='refresh'
+            description="Refresh", button_style="", icon="refresh"
         )
 
         self.status_output = widgets.Output()
 
         # Wire up observers
-        self.project_dropdown.observe(self._on_project_change, names='value')
-        self.subject_dropdown.observe(self._on_subject_change, names='value')
-        self.experiment_dropdown.observe(self._on_experiment_change, names='value')
-        self.scan_dropdown.observe(self._on_scan_change, names='value')
+        self.project_dropdown.observe(self._on_project_change, names="value")
+        self.subject_dropdown.observe(self._on_subject_change, names="value")
+        self.experiment_dropdown.observe(self._on_experiment_change, names="value")
+        self.scan_dropdown.observe(self._on_scan_change, names="value")
         self.load_button.on_click(self._on_load_click)
         self.load_all_button.on_click(self._on_load_all_click)
         self.refresh_button.on_click(self._on_refresh_click)
@@ -90,28 +88,29 @@ class SessionBrowser:
 
     def display(self):
         """Display the browser widget."""
-        header = widgets.HTML('''
+        header = widgets.HTML("""
             <h3 style="margin-bottom: 10px;">XNAT Session Browser</h3>
             <p style="color: #666; margin-bottom: 15px;">
                 Select a project, subject, session, and scan to load for QC review.
             </p>
-        ''')
+        """)
 
-        buttons = widgets.HBox([
-            self.load_button,
-            self.load_all_button,
-            self.refresh_button
-        ])
+        buttons = widgets.HBox(
+            [self.load_button, self.load_all_button, self.refresh_button]
+        )
 
-        container = widgets.VBox([
-            header,
-            self.project_dropdown,
-            self.subject_dropdown,
-            self.experiment_dropdown,
-            self.scan_dropdown,
-            buttons,
-            self.status_output
-        ], layout=widgets.Layout(padding='10px'))
+        container = widgets.VBox(
+            [
+                header,
+                self.project_dropdown,
+                self.subject_dropdown,
+                self.experiment_dropdown,
+                self.scan_dropdown,
+                buttons,
+                self.status_output,
+            ],
+            layout=widgets.Layout(padding="10px"),
+        )
 
         display(container)
 
@@ -127,26 +126,26 @@ class SessionBrowser:
         """Load available projects."""
         with self.status_output:
             clear_output()
-            print('Loading projects...')
+            print("Loading projects...")
 
         try:
             projects = self.xnat.get_projects()
-            self.project_dropdown.options = [('Select project...', None)] + [
+            self.project_dropdown.options = [("Select project...", None)] + [
                 (p, p) for p in projects
             ]
             self.project_dropdown.value = None
 
             with self.status_output:
                 clear_output()
-                print(f'Found {len(projects)} projects')
+                print(f"Found {len(projects)} projects")
         except Exception as e:
             with self.status_output:
                 clear_output()
-                print(f'Error loading projects: {e}')
+                print(f"Error loading projects: {e}")
 
     def _on_project_change(self, change):
         """Handle project selection."""
-        project = change['new']
+        project = change["new"]
         if not project:
             return
 
@@ -162,11 +161,11 @@ class SessionBrowser:
 
         with self.status_output:
             clear_output()
-            print(f'Loading subjects for {project}...')
+            print(f"Loading subjects for {project}...")
 
         try:
             subjects = self.xnat.get_subjects(project)
-            self.subject_dropdown.options = [('Select subject...', None)] + [
+            self.subject_dropdown.options = [("Select subject...", None)] + [
                 (s, s) for s in subjects
             ]
             self.subject_dropdown.value = None
@@ -174,15 +173,15 @@ class SessionBrowser:
 
             with self.status_output:
                 clear_output()
-                print(f'Found {len(subjects)} subjects')
+                print(f"Found {len(subjects)} subjects")
         except Exception as e:
             with self.status_output:
                 clear_output()
-                print(f'Error loading subjects: {e}')
+                print(f"Error loading subjects: {e}")
 
     def _on_subject_change(self, change):
         """Handle subject selection."""
-        subject = change['new']
+        subject = change["new"]
         if not subject:
             return
 
@@ -198,11 +197,11 @@ class SessionBrowser:
 
         with self.status_output:
             clear_output()
-            print(f'Loading sessions...')
+            print("Loading sessions...")
 
         try:
             experiments = self.xnat.get_experiments(project, subject)
-            self.experiment_dropdown.options = [('Select session...', None)] + [
+            self.experiment_dropdown.options = [("Select session...", None)] + [
                 (e, e) for e in experiments
             ]
             self.experiment_dropdown.value = None
@@ -210,15 +209,15 @@ class SessionBrowser:
 
             with self.status_output:
                 clear_output()
-                print(f'Found {len(experiments)} sessions')
+                print(f"Found {len(experiments)} sessions")
         except Exception as e:
             with self.status_output:
                 clear_output()
-                print(f'Error loading sessions: {e}')
+                print(f"Error loading sessions: {e}")
 
     def _on_experiment_change(self, change):
         """Handle experiment/session selection."""
-        experiment = change['new']
+        experiment = change["new"]
         if not experiment:
             return
 
@@ -232,14 +231,14 @@ class SessionBrowser:
 
         with self.status_output:
             clear_output()
-            print(f'Loading scans...')
+            print("Loading scans...")
 
         try:
             scans = self.xnat.get_scans(project, subject, experiment)
             self._current_scans = scans
 
             # Format as "ID - Description (N files)"
-            scan_options = [('Select scan...', None)]
+            scan_options = [("Select scan...", None)]
             for s in scans:
                 label = f"{s.id} - {s.description} ({s.num_files} files)"
                 scan_options.append((label, s))
@@ -251,15 +250,15 @@ class SessionBrowser:
 
             with self.status_output:
                 clear_output()
-                print(f'Found {len(scans)} scans')
+                print(f"Found {len(scans)} scans")
         except Exception as e:
             with self.status_output:
                 clear_output()
-                print(f'Error loading scans: {e}')
+                print(f"Error loading scans: {e}")
 
     def _on_scan_change(self, change):
         """Handle scan selection."""
-        self.load_button.disabled = change['new'] is None
+        self.load_button.disabled = change["new"] is None
 
     def _on_load_click(self, button):
         """Handle load button click."""
@@ -271,7 +270,7 @@ class SessionBrowser:
 
         with self.status_output:
             clear_output()
-            print(f'Loading scan {scan_info.id}...')
+            print(f"Loading scan {scan_info.id}...")
 
         if self._on_scan_selected:
             self._on_scan_selected(scan_info)
@@ -283,9 +282,9 @@ class SessionBrowser:
 
         with self.status_output:
             clear_output()
-            print(f'Loading {len(self._current_scans)} scans...')
+            print(f"Loading {len(self._current_scans)} scans...")
 
-        if hasattr(self, '_on_all_scans_selected') and self._on_all_scans_selected:
+        if hasattr(self, "_on_all_scans_selected") and self._on_all_scans_selected:
             self._on_all_scans_selected(self._current_scans)
 
     def _on_refresh_click(self, button):

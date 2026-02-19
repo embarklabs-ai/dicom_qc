@@ -5,6 +5,7 @@ from typing import Optional, List, Tuple
 
 class DicomQCError(Exception):
     """Base exception for DICOM QC tool."""
+
     pass
 
 
@@ -74,16 +75,16 @@ class ErrorDisplay:
 
         error_type = type(error).__name__
 
-        html = f'''
+        html = f"""
         <div style="background:#f8d7da; border:1px solid #f5c6cb;
                     border-radius:4px; padding:15px; margin:10px 0;">
             <h4 style="color:#721c24; margin-top:0;">
                 Error: {error_type}
             </h4>
             <p style="color:#721c24;">{str(error)}</p>
-            {f'<p style="color:#856404;"><strong>Context:</strong> {context}</p>' if context else ''}
+            {f'<p style="color:#856404;"><strong>Context:</strong> {context}</p>' if context else ""}
         </div>
-        '''
+        """
         display(HTML(html))
 
     @staticmethod
@@ -91,16 +92,16 @@ class ErrorDisplay:
         """Display a warning with styling."""
         from IPython.display import display, HTML
 
-        html = f'''
+        html = f"""
         <div style="background:#fff3cd; border:1px solid #ffc107;
                     border-radius:4px; padding:15px; margin:10px 0;">
             <h4 style="color:#856404; margin-top:0;">
                 Warning
             </h4>
             <p style="color:#856404;">{message}</p>
-            {f'<p style="color:#856404;font-size:0.9em;">{details}</p>' if details else ''}
+            {f'<p style="color:#856404;font-size:0.9em;">{details}</p>' if details else ""}
         </div>
-        '''
+        """
         display(HTML(html))
 
     @staticmethod
@@ -108,24 +109,28 @@ class ErrorDisplay:
         total: int,
         loaded: int,
         errors: List[Tuple[str, Exception]],
-        warnings: List[Tuple[str, str]]
+        warnings: List[Tuple[str, str]],
     ) -> None:
         """Display summary after loading with errors/warnings."""
         from IPython.display import display, HTML
 
         if errors:
-            error_list = '<ul>' + ''.join(
-                f'<li><code>{fname}</code>: {str(err)}</li>'
-                for fname, err in errors[:5]
-            ) + '</ul>'
+            error_list = (
+                "<ul>"
+                + "".join(
+                    f"<li><code>{fname}</code>: {str(err)}</li>"
+                    for fname, err in errors[:5]
+                )
+                + "</ul>"
+            )
             if len(errors) > 5:
-                error_list += f'<p>...and {len(errors)-5} more errors</p>'
+                error_list += f"<p>...and {len(errors) - 5} more errors</p>"
         else:
-            error_list = ''
+            error_list = ""
 
-        status_color = '#28a745' if not errors else '#ffc107'
+        status_color = "#28a745" if not errors else "#ffc107"
 
-        html = f'''
+        html = f"""
         <div style="background:#f8f9fa; border:1px solid #ddd;
                     border-radius:4px; padding:15px; margin:10px 0;">
             <h4 style="margin-top:0;">Loading Summary</h4>
@@ -134,8 +139,8 @@ class ErrorDisplay:
                     {loaded}/{total} files loaded successfully
                 </span>
             </p>
-            {f'<p style="color:#dc3545;"><strong>{len(errors)} errors:</strong></p>{error_list}' if errors else ''}
-            {f'<p style="color:#856404;"><strong>{len(warnings)} warnings</strong> (see logs for details)</p>' if warnings else ''}
+            {f'<p style="color:#dc3545;"><strong>{len(errors)} errors:</strong></p>{error_list}' if errors else ""}
+            {f'<p style="color:#856404;"><strong>{len(warnings)} warnings</strong> (see logs for details)</p>' if warnings else ""}
         </div>
-        '''
+        """
         display(HTML(html))
