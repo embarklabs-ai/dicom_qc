@@ -3,7 +3,7 @@
 from html import escape
 from typing import Optional
 
-from .quickcheck import _defaced_badge_html
+from .utils.html_helpers import _defaced_badge_html
 
 
 class QuickCheckDisplayMixin:

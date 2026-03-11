@@ -58,17 +58,6 @@ def _is_in_defaced_dir(path: Path) -> bool:
     return any(part.upper() == "DEFACED" for part in path.parts)
 
 
-def _defaced_badge_html(extra_style: str = "") -> str:
-    """Return the purple DEFACED badge HTML span.
-
-    Args:
-        extra_style: Additional inline CSS (padding, border-radius, positioning, etc.).
-    """
-    base = "background:#7c3aed;color:#fff;font-size:10px;font-weight:600;"
-    style = base + extra_style
-    return f'<span style="{style}">DEFACED</span>'
-
-
 def _fetch_scan_files(scan, defaced: bool = False) -> tuple:
     """Fetch DICOM files from an XNAT scan, excluding SNAPSHOTS resource.
 

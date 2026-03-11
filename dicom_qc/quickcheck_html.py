@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 import shutil
 
-from .quickcheck import _defaced_badge_html
+from .utils.html_helpers import _defaced_badge_html
 
 if TYPE_CHECKING:
     from .quickcheck import SeriesInfo
