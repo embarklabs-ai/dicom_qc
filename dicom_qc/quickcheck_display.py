@@ -328,7 +328,9 @@ class QuickCheckDisplayMixin:
 
             defaced_badge = ""
             if getattr(series, "_xnat_resource", None) == "DEFACED":
-                defaced_badge = _defaced_badge_html("padding:3px 10px;border-radius:4px;flex-shrink:0;")
+                defaced_badge = _defaced_badge_html(
+                    "padding:3px 10px;border-radius:4px;flex-shrink:0;"
+                )
 
             return widgets.HTML(f"""
                 <div style="flex:1;min-width:0;">
@@ -840,7 +842,9 @@ class QuickCheckDisplayMixin:
                             # Build complete card HTML - status badge floats top-right
                             defaced_card_badge = ""
                             if getattr(series, "_xnat_resource", None) == "DEFACED":
-                                defaced_card_badge = _defaced_badge_html("padding:4px 10px;border-radius:4px;position:absolute;top:0;right:0;margin-right:70px;")
+                                defaced_card_badge = _defaced_badge_html(
+                                    "padding:4px 10px;border-radius:4px;position:absolute;top:0;right:0;margin-right:70px;"
+                                )
 
                             card_content = widgets.HTML(
                                 f"""
@@ -1364,7 +1368,9 @@ class QuickCheckDisplayMixin:
 
             defaced_badge = ""
             if getattr(series, "_xnat_resource", None) == "DEFACED":
-                defaced_badge = _defaced_badge_html("padding:3px 10px;border-radius:4px;flex-shrink:0;")
+                defaced_badge = _defaced_badge_html(
+                    "padding:3px 10px;border-radius:4px;flex-shrink:0;"
+                )
 
             return widgets.HTML(f"""
                 <div style="flex:1;min-width:0;">
@@ -1842,7 +1848,9 @@ class QuickCheckDisplayMixin:
 
             defaced_card_badge = ""
             if getattr(series, "_xnat_resource", None) == "DEFACED":
-                defaced_card_badge = _defaced_badge_html("padding:4px 10px;border-radius:4px;position:absolute;top:0;right:0;margin-right:70px;")
+                defaced_card_badge = _defaced_badge_html(
+                    "padding:4px 10px;border-radius:4px;position:absolute;top:0;right:0;margin-right:70px;"
+                )
 
             card_content = widgets.HTML(
                 f"""

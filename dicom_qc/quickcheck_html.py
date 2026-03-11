@@ -478,7 +478,9 @@ class QuickCheckHTMLMixin:
 
         defaced_badge = ""
         if getattr(series, "_xnat_resource", None) == "DEFACED":
-            defaced_badge = _defaced_badge_html("padding:3px 8px;border-radius:10px;flex-shrink:0;")
+            defaced_badge = _defaced_badge_html(
+                "padding:3px 8px;border-radius:10px;flex-shrink:0;"
+            )
 
         return f'''                {link_start}<div class="qc-thumb {status}" data-status="{status}" data-checks="{data_checks}" style="{link_style}">
                     {img_html}
@@ -591,7 +593,9 @@ class QuickCheckHTMLMixin:
 
         defaced_badge = ""
         if getattr(series, "_xnat_resource", None) == "DEFACED":
-            defaced_badge = _defaced_badge_html("padding:3px 8px;border-radius:10px;flex-shrink:0;")
+            defaced_badge = _defaced_badge_html(
+                "padding:3px 8px;border-radius:10px;flex-shrink:0;"
+            )
 
         return f'''                {link_start}<div class="qc-thumb {status}" data-status="{status}" data-checks="{data_checks}" style="{link_style}">
                     <img src="{img_src}" alt="{escape(series.description or "", quote=True)}">
