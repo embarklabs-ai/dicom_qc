@@ -869,7 +869,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                     f"XNAT session connected ({with_uris}/{total} series have stored URIs)"
                 )
 
-    def discover(self, refresh: bool = False, defaced: bool = False) -> Dict[str, PatientInfo]:
+    def discover(
+        self, refresh: bool = False, defaced: bool = False
+    ) -> Dict[str, PatientInfo]:
         """Scan DICOM files and build patient/study/series hierarchy.
 
         Uses os.walk with followlinks=True to traverse symbolic links.
@@ -921,7 +923,10 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
             # Add normal files only for series WITHOUT defaced versions
             for ds, dcm_file in normal_entries:
-                if getattr(ds, "SeriesInstanceUID", "unknown") not in defaced_series_uids:
+                if (
+                    getattr(ds, "SeriesInstanceUID", "unknown")
+                    not in defaced_series_uids
+                ):
                     self._add_file_to_hierarchy(ds, dcm_file)
 
             # Mark defaced series
@@ -1092,7 +1097,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         # Fetch and store file URIs and local paths
         try:
-            all_files, resource_used = _xnat_retry(lambda: _fetch_scan_files(scan, defaced=self._xnat_defaced))
+            all_files, resource_used = _xnat_retry(
+                lambda: _fetch_scan_files(scan, defaced=self._xnat_defaced)
+            )
             series._xnat_resource = resource_used
             series._file_uris = [f.uri for f in all_files]
             series._file_paths = [
@@ -1122,7 +1129,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             scan: XNAT scan object to fetch from
         """
         try:
-            all_files, resource_used = _xnat_retry(lambda: _fetch_scan_files(scan, defaced=self._xnat_defaced))
+            all_files, resource_used = _xnat_retry(
+                lambda: _fetch_scan_files(scan, defaced=self._xnat_defaced)
+            )
             series._xnat_resource = resource_used
             if all_files:
                 series._file_uris = [f.uri for f in all_files]
@@ -1989,7 +1998,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             return []
 
         try:
-            all_files, resource_used = _fetch_scan_files(series._scan_obj, defaced=self._xnat_defaced)
+            all_files, resource_used = _fetch_scan_files(
+                series._scan_obj, defaced=self._xnat_defaced
+            )
             series._xnat_resource = resource_used
             series.files = all_files
             # Store URIs and local paths for save/restore

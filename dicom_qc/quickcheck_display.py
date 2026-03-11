@@ -324,8 +324,8 @@ class QuickCheckDisplayMixin:
             subject_label = patient.label if patient else "Unknown"
             session_label = study.label if study else "Unknown"
 
-            defaced_badge = ''
-            if getattr(series, '_xnat_resource', None) == 'DEFACED':
+            defaced_badge = ""
+            if getattr(series, "_xnat_resource", None) == "DEFACED":
                 defaced_badge = '<span style="background:#7c3aed;color:#fff;padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600;flex-shrink:0;">DEFACED</span>'
 
             return widgets.HTML(f"""
@@ -836,8 +836,8 @@ class QuickCheckDisplayMixin:
                             )
 
                             # Build complete card HTML - status badge floats top-right
-                            defaced_card_badge = ''
-                            if getattr(series, '_xnat_resource', None) == 'DEFACED':
+                            defaced_card_badge = ""
+                            if getattr(series, "_xnat_resource", None) == "DEFACED":
                                 defaced_card_badge = '<span style="position:absolute;top:0;right:0;margin-right:70px;background:#7c3aed;color:#fff;padding:4px 10px;border-radius:4px;font-size:10px;font-weight:600;">DEFACED</span>'
 
                             card_content = widgets.HTML(
@@ -1360,8 +1360,8 @@ class QuickCheckDisplayMixin:
             subject_label = patient.label if patient else "Unknown"
             session_label = study.label if study else "Unknown"
 
-            defaced_badge = ''
-            if getattr(series, '_xnat_resource', None) == 'DEFACED':
+            defaced_badge = ""
+            if getattr(series, "_xnat_resource", None) == "DEFACED":
                 defaced_badge = '<span style="background:#7c3aed;color:#fff;padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600;flex-shrink:0;">DEFACED</span>'
 
             return widgets.HTML(f"""
@@ -1838,8 +1838,8 @@ class QuickCheckDisplayMixin:
                     issue_list = ", ".join(escape(r.check_name) for r in issues)
                     issue_html = f'<div style="margin-top:8px;padding:6px 10px;font-size:11px;color:{style["text"]};background:rgba(0,0,0,0.04);border-radius:4px;word-wrap:break-word;">{issue_list}</div>'
 
-            defaced_card_badge = ''
-            if getattr(series, '_xnat_resource', None) == 'DEFACED':
+            defaced_card_badge = ""
+            if getattr(series, "_xnat_resource", None) == "DEFACED":
                 defaced_card_badge = '<span style="position:absolute;top:0;right:0;margin-right:70px;background:#7c3aed;color:#fff;padding:4px 10px;border-radius:4px;font-size:10px;font-weight:600;">DEFACED</span>'
 
             card_content = widgets.HTML(

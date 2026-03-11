@@ -6,7 +6,13 @@ import pytest
 
 from pathlib import Path
 
-from dicom_qc.quickcheck import QuickCheck, SeriesInfo, StudyInfo, PatientInfo, _is_in_defaced_dir
+from dicom_qc.quickcheck import (
+    QuickCheck,
+    SeriesInfo,
+    StudyInfo,
+    PatientInfo,
+    _is_in_defaced_dir,
+)
 from dicom_qc.core.geometry import QCReport, QCResult
 
 

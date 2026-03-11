@@ -474,8 +474,8 @@ class QuickCheckHTMLMixin:
             ]
         data_checks = ",".join(series_check_names)
 
-        defaced_badge = ''
-        if getattr(series, '_xnat_resource', None) == 'DEFACED':
+        defaced_badge = ""
+        if getattr(series, "_xnat_resource", None) == "DEFACED":
             defaced_badge = '<span style="background:#7c3aed;color:#fff;padding:3px 8px;border-radius:10px;font-size:10px;font-weight:600;flex-shrink:0;">DEFACED</span>'
 
         return f'''                {link_start}<div class="qc-thumb {status}" data-status="{status}" data-checks="{data_checks}" style="{link_style}">
@@ -587,8 +587,8 @@ class QuickCheckHTMLMixin:
             ]
         data_checks = ",".join(series_check_names)
 
-        defaced_badge = ''
-        if getattr(series, '_xnat_resource', None) == 'DEFACED':
+        defaced_badge = ""
+        if getattr(series, "_xnat_resource", None) == "DEFACED":
             defaced_badge = '<span style="background:#7c3aed;color:#fff;padding:3px 8px;border-radius:10px;font-size:10px;font-weight:600;flex-shrink:0;">DEFACED</span>'
 
         return f'''                {link_start}<div class="qc-thumb {status}" data-status="{status}" data-checks="{data_checks}" style="{link_style}">
