@@ -46,6 +46,8 @@ Main entry point for batch review:
 ```python
 qc = QuickCheck(data_dir)
 qc.discover()           # Scan for DICOM files, build hierarchy
+qc.discover(defaced=True)               # Local: load from DEFACED/ dirs where available, fallback to DICOM/
+qc.discover_xnat(project, defaced=True)  # XNAT: load DEFACED resource where available, fallback to DICOM
 qc.process_all()        # Run QC checks (parallel, auto-save)
 qc.generate_html_report(path)  # Export HTML report
 qc.display()            # Interactive Jupyter dashboard (paginated)
@@ -108,6 +110,48 @@ Series types that may fail in strict viewers (ITK-SNAP, 3D Slicer):
 
 MicroDICOM is permissive; ITK-SNAP/3D Slicer enforce strict DICOM conformance.
 
+## Defaced Resource Loading
+
+### Feature: `defaced` flag on `discover()` and `discover_xnat()`
+
+```python
+qc.discover(defaced=True)               # Local data
+qc.discover_xnat(project, defaced=True)  # XNAT data
+```
+
+When `defaced=True`:
+- Scans **with** DEFACED data: load from DEFACED (purple "DEFACED" badge in `qc.display()` and HTML report)
+- Scans **without** DEFACED data: fall back to DICOM (no badge)
+- Typically only anatomical scans are defaced; fMRI/other scans load from DICOM as usual
+- When `defaced=False` (default): files in DEFACED directories/resources are excluded to avoid double-counting
+
+### Local data layout
+
+Local defaced data uses a `DEFACED/` directory alongside `DICOM/`:
+```
+scan_folder/DICOM/*.dcm      # Original DICOMs
+scan_folder/DEFACED/*.dcm    # Defaced DICOMs (same SeriesInstanceUID)
+```
+`_is_in_defaced_dir()` checks if any path component is "DEFACED" (case-insensitive).
+
+### Implementation details
+
+- `_fetch_scan_files(scan, defaced)` returns `(files, resource_label)` tuple where `resource_label` is `"DEFACED"` or `"DICOM"`
+- `SeriesInfo._xnat_resource` tracks which resource was loaded per series
+- `quickcheck_display.py` renders a purple badge when `_xnat_resource == "DEFACED"`
+
+### xnatpy `data_path` caveat
+
+xnatpy only populates `data_path` for "native" archive resources (e.g. DICOM). Pipeline-created resources (e.g. DEFACED) return `None` for `data_path` even when files exist on disk at the expected mount path.
+
+**Fix**: `_find_scan_base_dir()` derives the local mount path from the DICOM resource's `data_path` (which IS populated), then swaps the resource label in the path to locate DEFACED files:
+```
+/data/projects/{project}/experiments/{session}/SCANS/{scan_id}/DICOM/  -> known via data_path
+/data/projects/{project}/experiments/{session}/SCANS/{scan_id}/DEFACED/ -> derived
+```
+
+Without this fix, empty `data_path` causes `load_from_xnat()` to fall back from SimpleITK to pydicom manual loading, which produces incorrect orientation in coronal/sagittal views.
+
 ## Development Notes
 
 ### Dependencies
@@ -162,6 +206,8 @@ jupyter notebook examples/local.ipynb
 **Blurry images in OHIF**: Some JPEG-2000 encoded data renders blurry; root cause not yet identified
 
 **Slice thickness mismatch**: SliceThickness tag vs calculated spacing from positions - both shown when different
+
+**DEFACED orientation flipped**: If coronal/sagittal views are upside down for DEFACED scans, check that `_find_scan_base_dir()` is deriving local paths correctly. Empty `data_path` from xnatpy causes fallback to pydicom loading which produces wrong orientation.
 
 ## File Patterns
 

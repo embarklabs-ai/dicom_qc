@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 import shutil
 
+from .utils.html_helpers import _defaced_badge_html
+
 if TYPE_CHECKING:
     from .quickcheck import SeriesInfo
 
@@ -474,10 +476,17 @@ class QuickCheckHTMLMixin:
             ]
         data_checks = ",".join(series_check_names)
 
+        defaced_badge = ""
+        if getattr(series, "_xnat_resource", None) == "DEFACED":
+            defaced_badge = _defaced_badge_html(
+                "padding:3px 8px;border-radius:10px;flex-shrink:0;"
+            )
+
         return f'''                {link_start}<div class="qc-thumb {status}" data-status="{status}" data-checks="{data_checks}" style="{link_style}">
                     {img_html}
                     <div class="info">
                         <span class="series-label">{escape(series.label)}</span>
+                        {defaced_badge}
                         <span class="status-badge {status}">{series.qc_status}</span>
                     </div>
                     {reason_html}
@@ -582,10 +591,17 @@ class QuickCheckHTMLMixin:
             ]
         data_checks = ",".join(series_check_names)
 
+        defaced_badge = ""
+        if getattr(series, "_xnat_resource", None) == "DEFACED":
+            defaced_badge = _defaced_badge_html(
+                "padding:3px 8px;border-radius:10px;flex-shrink:0;"
+            )
+
         return f'''                {link_start}<div class="qc-thumb {status}" data-status="{status}" data-checks="{data_checks}" style="{link_style}">
                     <img src="{img_src}" alt="{escape(series.description or "", quote=True)}">
                     <div class="info">
                         <span class="series-label">{escape(series.label)}</span>
+                        {defaced_badge}
                         <span class="status-badge {status}">{series.qc_status}</span>
                     </div>
                     {reason_html}

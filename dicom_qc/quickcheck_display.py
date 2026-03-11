@@ -3,6 +3,8 @@
 from html import escape
 from typing import Optional
 
+from .utils.html_helpers import _defaced_badge_html
+
 
 class QuickCheckDisplayMixin:
     """Mixin providing interactive Jupyter display methods for QuickCheck."""
@@ -324,11 +326,18 @@ class QuickCheckDisplayMixin:
             subject_label = patient.label if patient else "Unknown"
             session_label = study.label if study else "Unknown"
 
+            defaced_badge = ""
+            if getattr(series, "_xnat_resource", None) == "DEFACED":
+                defaced_badge = _defaced_badge_html(
+                    "padding:3px 10px;border-radius:4px;flex-shrink:0;"
+                )
+
             return widgets.HTML(f"""
                 <div style="flex:1;min-width:0;">
                     <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">
                         <span style="color:#1e293b;font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{escape(series.label)}</span>
                         <span style="background:{style["badge_bg"]};color:{style["badge_text"]};padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600;flex-shrink:0;">{series.qc_status}</span>
+                        {defaced_badge}
                     </div>
                     <div style="color:#64748b;font-size:11px;">
                         {escape(subject_label)} · {escape(session_label)}
@@ -831,10 +840,17 @@ class QuickCheckDisplayMixin:
                             )
 
                             # Build complete card HTML - status badge floats top-right
+                            defaced_card_badge = ""
+                            if getattr(series, "_xnat_resource", None) == "DEFACED":
+                                defaced_card_badge = _defaced_badge_html(
+                                    "padding:4px 10px;border-radius:4px;position:absolute;top:0;right:0;margin-right:70px;"
+                                )
+
                             card_content = widgets.HTML(
                                 f"""
                                 <div style="position:relative;width:100%;box-sizing:border-box;">
                                     <span style="position:absolute;top:0;right:0;background:{badge_bg};color:{badge_text};padding:4px 10px;border-radius:4px;font-size:10px;font-weight:600;">{series.qc_status}</span>
+                                    {defaced_card_badge}
                                     <div style="margin-bottom:10px;padding-right:75px;box-sizing:border-box;">
                                         <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Subject</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{escape(patient.label)}</span></div>
                                         <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Session</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{escape(study.label)}</span></div>
@@ -1350,11 +1366,18 @@ class QuickCheckDisplayMixin:
             subject_label = patient.label if patient else "Unknown"
             session_label = study.label if study else "Unknown"
 
+            defaced_badge = ""
+            if getattr(series, "_xnat_resource", None) == "DEFACED":
+                defaced_badge = _defaced_badge_html(
+                    "padding:3px 10px;border-radius:4px;flex-shrink:0;"
+                )
+
             return widgets.HTML(f"""
                 <div style="flex:1;min-width:0;">
                     <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">
                         <span style="color:#1e293b;font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{escape(series.label)}</span>
                         <span style="background:{style["badge_bg"]};color:{style["badge_text"]};padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600;flex-shrink:0;">{series.qc_status}</span>
+                        {defaced_badge}
                     </div>
                     <div style="color:#64748b;font-size:11px;">
                         {escape(subject_label)} · {escape(session_label)}
@@ -1823,10 +1846,17 @@ class QuickCheckDisplayMixin:
                     issue_list = ", ".join(escape(r.check_name) for r in issues)
                     issue_html = f'<div style="margin-top:8px;padding:6px 10px;font-size:11px;color:{style["text"]};background:rgba(0,0,0,0.04);border-radius:4px;word-wrap:break-word;">{issue_list}</div>'
 
+            defaced_card_badge = ""
+            if getattr(series, "_xnat_resource", None) == "DEFACED":
+                defaced_card_badge = _defaced_badge_html(
+                    "padding:4px 10px;border-radius:4px;position:absolute;top:0;right:0;margin-right:70px;"
+                )
+
             card_content = widgets.HTML(
                 f"""
                 <div style="position:relative;width:100%;box-sizing:border-box;">
                     <span style="position:absolute;top:0;right:0;background:{badge_bg};color:{badge_text};padding:4px 10px;border-radius:4px;font-size:10px;font-weight:600;">{status}</span>
+                    {defaced_card_badge}
                     <div style="margin-bottom:10px;padding-right:75px;box-sizing:border-box;">
                         <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Subject</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{escape(row["patient_id"])}</span></div>
                         <div style="display:flex;margin-bottom:3px;"><span style="color:#64748b;width:55px;flex-shrink:0;font-size:12px;">Session</span><span style="font-size:12px;color:#1e293b;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">{escape(session_label)}</span></div>

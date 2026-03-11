@@ -4,7 +4,15 @@ import zipfile
 
 import pytest
 
-from dicom_qc.quickcheck import QuickCheck, SeriesInfo, StudyInfo, PatientInfo
+from pathlib import Path
+
+from dicom_qc.quickcheck import (
+    QuickCheck,
+    SeriesInfo,
+    StudyInfo,
+    PatientInfo,
+    _is_in_defaced_dir,
+)
 from dicom_qc.core.geometry import QCReport, QCResult
 
 
@@ -457,3 +465,19 @@ class TestSaveBehavior:
 
         assert series.files == []
         assert series._file_uris == ["/data/file1.dcm"]
+
+
+class TestIsInDefacedDir:
+    """Tests for _is_in_defaced_dir helper."""
+
+    def test_defaced_dir(self):
+        assert _is_in_defaced_dir(Path("/data/scan/DEFACED/file.dcm")) is True
+
+    def test_non_defaced_dir(self):
+        assert _is_in_defaced_dir(Path("/data/scan/DICOM/file.dcm")) is False
+
+    def test_case_insensitive(self):
+        assert _is_in_defaced_dir(Path("/data/scan/defaced/file.dcm")) is True
+
+    def test_partial_name_not_matched(self):
+        assert _is_in_defaced_dir(Path("/data/scan/DICOM/defaced_file.dcm")) is False

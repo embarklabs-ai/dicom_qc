@@ -53,14 +53,38 @@ def _xnat_retry(func: Callable, max_retries: int = 3, base_delay: float = 2.0):
             time.sleep(delay)
 
 
-def _fetch_scan_files(scan) -> List:
-    """Fetch all DICOM files from an XNAT scan, excluding SNAPSHOTS resource."""
+def _is_in_defaced_dir(path: Path) -> bool:
+    """Check if a file path has a DEFACED directory component."""
+    return any(part.upper() == "DEFACED" for part in path.parts)
+
+
+def _fetch_scan_files(scan, defaced: bool = False) -> tuple:
+    """Fetch DICOM files from an XNAT scan, excluding SNAPSHOTS resource.
+
+    When ``defaced=True``, prefers the DEFACED resource but falls back to
+    non-DEFACED resources if no DEFACED resource exists for this scan.
+
+    Returns:
+        Tuple of (files_list, resource_label) where resource_label is
+        ``"DEFACED"`` when loaded from the DEFACED resource, else ``"DICOM"``.
+    """
+    if defaced:
+        defaced_files = []
+        for res in scan.resources.values():
+            res_label = getattr(res, "label", "").upper()
+            if res_label == "DEFACED":
+                defaced_files.extend(res.files.values())
+        if defaced_files:
+            return defaced_files, "DEFACED"
+
+    # Default path, or fallback when defaced=True but no DEFACED resource
     all_files = []
     for res in scan.resources.values():
         res_label = getattr(res, "label", "").upper()
-        if res_label != "SNAPSHOTS":
-            all_files.extend(res.files.values())
-    return all_files
+        if res_label in ("SNAPSHOTS", "DEFACED"):
+            continue
+        all_files.extend(res.files.values())
+    return all_files, "DICOM"
 
 
 class XnatFileHandle:
@@ -125,6 +149,7 @@ class SeriesInfo:
     )  # Local file paths (if mounted)
     _scan_uri: Optional[str] = None  # Scan URI for restoring access
     xnat_scan_id: Optional[str] = None  # XNAT scan ID (only in XNAT mode)
+    _xnat_resource: Optional[str] = None  # XNAT resource loaded ("DICOM" or "DEFACED")
     _xnat_subject_label: Optional[str] = (
         None  # XNAT subject label (for thumbnail naming)
     )
@@ -249,6 +274,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         self._xnat_session: Any = None  # XNAT session for restoring file access
         self._xnat_project_id: Optional[str] = None  # XNAT project ID for OHIF links
         self._xnat_base_url: Optional[str] = None  # XNAT base URL for OHIF links
+        self._xnat_defaced: bool = False  # Load from DEFACED resource instead of DICOM
 
         # Flag to skip orphan cleanup during discovery (partial data in memory)
         self._discovering = False
@@ -843,7 +869,9 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                     f"XNAT session connected ({with_uris}/{total} series have stored URIs)"
                 )
 
-    def discover(self, refresh: bool = False) -> Dict[str, PatientInfo]:
+    def discover(
+        self, refresh: bool = False, defaced: bool = False
+    ) -> Dict[str, PatientInfo]:
         """Scan DICOM files and build patient/study/series hierarchy.
 
         Uses os.walk with followlinks=True to traverse symbolic links.
@@ -870,12 +898,51 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                 if f.lower().endswith(".dcm"):
                     dcm_files.append(Path(root) / f)
 
-        for dcm_file in dcm_files:
-            try:
-                ds = pydicom.dcmread(str(dcm_file), stop_before_pixels=True)
+        if defaced:
+            # Separate files by whether they live in a DEFACED directory
+            defaced_entries = []
+            normal_entries = []
+            for dcm_file in dcm_files:
+                try:
+                    ds = pydicom.dcmread(str(dcm_file), stop_before_pixels=True)
+                    if _is_in_defaced_dir(dcm_file):
+                        defaced_entries.append((ds, dcm_file))
+                    else:
+                        normal_entries.append((ds, dcm_file))
+                except Exception:
+                    pass
+
+            # Identify which series have defaced versions
+            defaced_series_uids = set(
+                getattr(ds, "SeriesInstanceUID", "unknown") for ds, _ in defaced_entries
+            )
+
+            # Add defaced files to hierarchy
+            for ds, dcm_file in defaced_entries:
                 self._add_file_to_hierarchy(ds, dcm_file)
-            except Exception:
-                pass
+
+            # Add normal files only for series WITHOUT defaced versions
+            for ds, dcm_file in normal_entries:
+                if (
+                    getattr(ds, "SeriesInstanceUID", "unknown")
+                    not in defaced_series_uids
+                ):
+                    self._add_file_to_hierarchy(ds, dcm_file)
+
+            # Mark defaced series
+            for series in self.get_all_series():
+                if series.uid in defaced_series_uids:
+                    series._xnat_resource = "DEFACED"
+        else:
+            # Default: exclude DEFACED directories to avoid double-counting
+            for dcm_file in dcm_files:
+                if _is_in_defaced_dir(dcm_file):
+                    continue
+                try:
+                    ds = pydicom.dcmread(str(dcm_file), stop_before_pixels=True)
+                    self._add_file_to_hierarchy(ds, dcm_file)
+                except Exception:
+                    pass
 
         # Restore existing processed data
         if existing_series:
@@ -949,6 +1016,28 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             patient.studies[session_label].xnat_experiment_id = xnat_experiment_id
         return patient.studies[session_label]
 
+    @staticmethod
+    def _find_scan_base_dir(scan: Any) -> Optional[str]:
+        """Find the mounted base directory for a scan from its DICOM resource.
+
+        Looks at the DICOM resource's first file data_path to derive the scan
+        directory (e.g. ``/data/projects/.../SCANS/9/``).
+
+        Returns:
+            Base directory path, or None if not found.
+        """
+        try:
+            for res in scan.resources.values():
+                if getattr(res, "label", "").upper() == "DICOM":
+                    for f in res.files.values():
+                        dp = getattr(f, "data_path", None)
+                        if dp and Path(dp).exists():
+                            # e.g. /data/.../SCANS/9/DICOM/file.dcm -> /data/.../SCANS/9/
+                            return str(Path(dp).parent.parent)
+        except Exception:
+            pass
+        return None
+
     def _create_series_from_xnat_scan(
         self, scan: Any, subject_label: str, session_label: str
     ) -> "SeriesInfo":
@@ -987,11 +1076,25 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
 
         # Fetch and store file URIs and local paths
         try:
-            all_files = _xnat_retry(lambda: _fetch_scan_files(scan))
+            all_files, resource_used = _xnat_retry(
+                lambda: _fetch_scan_files(scan, defaced=self._xnat_defaced)
+            )
+            series._xnat_resource = resource_used
             series._file_uris = [f.uri for f in all_files]
             series._file_paths = [
                 getattr(f, "data_path", None) or "" for f in all_files
             ]
+
+            # Pipeline-created resources (e.g. DEFACED) may lack data_path
+            # even when files exist on the mounted filesystem. Derive local
+            # paths from the DICOM resource's known mount point.
+            if resource_used != "DICOM" and all(not p for p in series._file_paths):
+                base_dir = self._find_scan_base_dir(scan)
+                if base_dir:
+                    series._file_paths = [
+                        str(Path(base_dir) / resource_used / Path(f.uri).name)
+                        for f in all_files
+                    ]
         except Exception as e:
             series.error = f"Failed to fetch file list: {e}"
 
@@ -1005,7 +1108,10 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             scan: XNAT scan object to fetch from
         """
         try:
-            all_files = _xnat_retry(lambda: _fetch_scan_files(scan))
+            all_files, resource_used = _xnat_retry(
+                lambda: _fetch_scan_files(scan, defaced=self._xnat_defaced)
+            )
+            series._xnat_resource = resource_used
             if all_files:
                 series._file_uris = [f.uri for f in all_files]
                 series._file_paths = [
@@ -1144,6 +1250,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         read_dicom: bool = False,
         parallel: bool = None,
         max_workers: int = 8,
+        defaced: bool = False,
     ) -> None:
         """Discover DICOM series from an XNAT project.
 
@@ -1160,6 +1267,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             parallel: If True, use parallel discovery for faster throughput.
                      If None, auto-enable for >10 subjects.
             max_workers: Number of parallel workers. Default: 8.
+            defaced: If True, load from DEFACED resource instead of DICOM.
 
         Notes:
             Updates ``self.patients`` in place.
@@ -1175,6 +1283,7 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
         if refresh:
             self.patients = {}
         self._xnat_mode = True
+        self._xnat_defaced = defaced
         self._discovering = True
 
         # Store project info for OHIF links
@@ -1868,12 +1977,10 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
             return []
 
         try:
-            all_files = []
-            for res in series._scan_obj.resources.values():
-                res_label = getattr(res, "label", "").upper()
-                if res_label == "SNAPSHOTS":
-                    continue
-                all_files.extend(res.files.values())
+            all_files, resource_used = _fetch_scan_files(
+                series._scan_obj, defaced=self._xnat_defaced
+            )
+            series._xnat_resource = resource_used
             series.files = all_files
             # Store URIs and local paths for save/restore
             series._file_uris = [f.uri for f in all_files]

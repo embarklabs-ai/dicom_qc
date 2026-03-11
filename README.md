@@ -5,6 +5,7 @@ Batch quality control review of DICOM data within XNAT or on file system using J
 ## Features
 
 - Automatic discovery of DICOM files from local directories or XNAT projects
+- Defaced data support: load from DEFACED resources/directories with per-series badge indicators
 - Geometry and metadata validation checks (slice ordering, gaps, anisotropy, etc.)
 - Interactive 3-pane viewer for Jupyter notebooks (axial, coronal, sagittal)
 - DICOM header browser with tag filtering
@@ -91,7 +92,19 @@ uv run jupyter lab
 |----------|----------|
 | `examples/local.ipynb` | QC review of local DICOM data |
 | `examples/xnat.ipynb` | QC review from XNAT project |
+| `examples/xnat_ssl_patch.ipynb` | QC review from XNAT with legacy TLS |
 | `examples/local_dev.ipynb` | Development (uses editable install) |
+
+### Defaced Data
+
+Set `defaced=True` to load from DEFACED resources (XNAT) or `DEFACED/` directories (local) where available, falling back to DICOM for scans without defaced data:
+
+```python
+qc.discover(defaced=True)               # Local
+qc.discover_xnat(project, defaced=True)  # XNAT
+```
+
+Series loaded from defaced data show a purple "DEFACED" badge in both the interactive display and HTML reports.
 
 <details>
 <summary><strong>Architecture</strong></summary>

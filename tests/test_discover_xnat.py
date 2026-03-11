@@ -597,10 +597,11 @@ class TestFetchScanFiles:
         secondary._files["file3.dcm"] = MockXnatFile(uri="/file3.dcm")
         scan._resources["secondary"] = secondary
 
-        files = _fetch_scan_files(scan)
+        files, resource = _fetch_scan_files(scan)
 
         # Should get files from both resources
         assert len(files) == 3
+        assert resource == "DICOM"
 
     def test_fetch_scan_files_excludes_snapshots(self):
         """Test that _fetch_scan_files excludes SNAPSHOTS resource."""
@@ -616,10 +617,11 @@ class TestFetchScanFiles:
         snapshots._files["snap.jpg"] = MockXnatFile(uri="/snap.jpg")
         scan._resources["SNAPSHOTS"] = snapshots
 
-        files = _fetch_scan_files(scan)
+        files, resource = _fetch_scan_files(scan)
 
         assert len(files) == 1
         assert files[0].uri == "/file1.dcm"
+        assert resource == "DICOM"
 
     def test_fetch_scan_files_case_insensitive_snapshots(self):
         """Test that SNAPSHOTS exclusion is case-insensitive."""
@@ -636,9 +638,90 @@ class TestFetchScanFiles:
         snapshots._files["snap.jpg"] = MockXnatFile(uri="/snap.jpg")
         scan._resources["snapshots"] = snapshots
 
-        files = _fetch_scan_files(scan)
+        files, resource = _fetch_scan_files(scan)
 
         assert len(files) == 1
+        assert resource == "DICOM"
+
+    def test_fetch_scan_files_excludes_defaced_by_default(self):
+        """Test that _fetch_scan_files excludes DEFACED resource by default."""
+        from dicom_qc.quickcheck import _fetch_scan_files
+
+        scan = MockXnatScan(id="1", series_description="Test")
+
+        dicom = MockXnatResource(label="DICOM")
+        dicom._files["file1.dcm"] = MockXnatFile(uri="/dicom/file1.dcm")
+        dicom._files["file2.dcm"] = MockXnatFile(uri="/dicom/file2.dcm")
+        scan._resources["DICOM"] = dicom
+
+        defaced = MockXnatResource(label="DEFACED")
+        defaced._files["file1.dcm"] = MockXnatFile(uri="/defaced/file1.dcm")
+        defaced._files["file2.dcm"] = MockXnatFile(uri="/defaced/file2.dcm")
+        scan._resources["DEFACED"] = defaced
+
+        files, resource = _fetch_scan_files(scan)
+
+        assert len(files) == 2
+        assert all("/dicom/" in f.uri for f in files)
+        assert resource == "DICOM"
+
+    def test_fetch_scan_files_defaced_flag_loads_only_defaced(self):
+        """Test that defaced=True loads only from DEFACED resource."""
+        from dicom_qc.quickcheck import _fetch_scan_files
+
+        scan = MockXnatScan(id="1", series_description="Test")
+
+        dicom = MockXnatResource(label="DICOM")
+        dicom._files["file1.dcm"] = MockXnatFile(uri="/dicom/file1.dcm")
+        dicom._files["file2.dcm"] = MockXnatFile(uri="/dicom/file2.dcm")
+        scan._resources["DICOM"] = dicom
+
+        defaced = MockXnatResource(label="DEFACED")
+        defaced._files["file1.dcm"] = MockXnatFile(uri="/defaced/file1.dcm")
+        defaced._files["file2.dcm"] = MockXnatFile(uri="/defaced/file2.dcm")
+        scan._resources["DEFACED"] = defaced
+
+        files, resource = _fetch_scan_files(scan, defaced=True)
+
+        assert len(files) == 2
+        assert all("/defaced/" in f.uri for f in files)
+        assert resource == "DEFACED"
+
+    def test_fetch_scan_files_defaced_flag_excludes_snapshots(self):
+        """Test that defaced=True still excludes SNAPSHOTS."""
+        from dicom_qc.quickcheck import _fetch_scan_files
+
+        scan = MockXnatScan(id="1", series_description="Test")
+
+        defaced = MockXnatResource(label="DEFACED")
+        defaced._files["file1.dcm"] = MockXnatFile(uri="/defaced/file1.dcm")
+        scan._resources["DEFACED"] = defaced
+
+        snapshots = MockXnatResource(label="SNAPSHOTS")
+        snapshots._files["snap.jpg"] = MockXnatFile(uri="/snap.jpg")
+        scan._resources["SNAPSHOTS"] = snapshots
+
+        files, resource = _fetch_scan_files(scan, defaced=True)
+
+        assert len(files) == 1
+        assert files[0].uri == "/defaced/file1.dcm"
+        assert resource == "DEFACED"
+
+    def test_fetch_scan_files_defaced_falls_back_to_dicom(self):
+        """Test that defaced=True falls back to DICOM when no DEFACED resource exists."""
+        from dicom_qc.quickcheck import _fetch_scan_files
+
+        scan = MockXnatScan(id="1", series_description="Test")
+
+        dicom = MockXnatResource(label="DICOM")
+        dicom._files["file1.dcm"] = MockXnatFile(uri="/dicom/file1.dcm")
+        scan._resources["DICOM"] = dicom
+
+        files, resource = _fetch_scan_files(scan, defaced=True)
+
+        assert len(files) == 1
+        assert files[0].uri == "/dicom/file1.dcm"
+        assert resource == "DICOM"
 
 
 class TestDiscoverXnatEdgeCases:
