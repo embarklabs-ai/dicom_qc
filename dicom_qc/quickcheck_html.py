@@ -474,10 +474,15 @@ class QuickCheckHTMLMixin:
             ]
         data_checks = ",".join(series_check_names)
 
+        defaced_badge = ''
+        if getattr(series, '_xnat_resource', None) == 'DEFACED':
+            defaced_badge = '<span style="background:#7c3aed;color:#fff;padding:3px 8px;border-radius:10px;font-size:10px;font-weight:600;flex-shrink:0;">DEFACED</span>'
+
         return f'''                {link_start}<div class="qc-thumb {status}" data-status="{status}" data-checks="{data_checks}" style="{link_style}">
                     {img_html}
                     <div class="info">
                         <span class="series-label">{escape(series.label)}</span>
+                        {defaced_badge}
                         <span class="status-badge {status}">{series.qc_status}</span>
                     </div>
                     {reason_html}
@@ -582,10 +587,15 @@ class QuickCheckHTMLMixin:
             ]
         data_checks = ",".join(series_check_names)
 
+        defaced_badge = ''
+        if getattr(series, '_xnat_resource', None) == 'DEFACED':
+            defaced_badge = '<span style="background:#7c3aed;color:#fff;padding:3px 8px;border-radius:10px;font-size:10px;font-weight:600;flex-shrink:0;">DEFACED</span>'
+
         return f'''                {link_start}<div class="qc-thumb {status}" data-status="{status}" data-checks="{data_checks}" style="{link_style}">
                     <img src="{img_src}" alt="{escape(series.description or "", quote=True)}">
                     <div class="info">
                         <span class="series-label">{escape(series.label)}</span>
+                        {defaced_badge}
                         <span class="status-badge {status}">{series.qc_status}</span>
                     </div>
                     {reason_html}
