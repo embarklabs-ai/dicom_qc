@@ -58,6 +58,17 @@ def _is_in_defaced_dir(path: Path) -> bool:
     return any(part.upper() == "DEFACED" for part in path.parts)
 
 
+def _defaced_badge_html(extra_style: str = "") -> str:
+    """Return the purple DEFACED badge HTML span.
+
+    Args:
+        extra_style: Additional inline CSS (padding, border-radius, positioning, etc.).
+    """
+    base = "background:#7c3aed;color:#fff;font-size:10px;font-weight:600;"
+    style = base + extra_style
+    return f'<span style="{style}">DEFACED</span>'
+
+
 def _fetch_scan_files(scan, defaced: bool = False) -> tuple:
     """Fetch DICOM files from an XNAT scan, excluding SNAPSHOTS resource.
 
@@ -1033,27 +1044,6 @@ class QuickCheck(QuickCheckHTMLMixin, QuickCheckDisplayMixin):
                         dp = getattr(f, "data_path", None)
                         if dp and Path(dp).exists():
                             # e.g. /data/.../SCANS/9/DICOM/file.dcm -> /data/.../SCANS/9/
-                            return str(Path(dp).parent.parent)
-        except Exception:
-            pass
-        return None
-
-    @staticmethod
-    def _find_scan_base_dir(scan: Any) -> Optional[str]:
-        """Find the mounted base directory for a scan from its DICOM resource.
-
-        Looks at the DICOM resource's first file data_path to derive the scan
-        directory (e.g. ``/data/projects/.../SCANS/9/``).
-
-        Returns:
-            Base directory path, or None if not found.
-        """
-        try:
-            for res in scan.resources.values():
-                if getattr(res, "label", "").upper() == "DICOM":
-                    for f in res.files.values():
-                        dp = getattr(f, "data_path", None)
-                        if dp and Path(dp).exists():
                             return str(Path(dp).parent.parent)
         except Exception:
             pass

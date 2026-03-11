@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 import shutil
 
+from .quickcheck import _defaced_badge_html
+
 if TYPE_CHECKING:
     from .quickcheck import SeriesInfo
 
@@ -476,7 +478,7 @@ class QuickCheckHTMLMixin:
 
         defaced_badge = ""
         if getattr(series, "_xnat_resource", None) == "DEFACED":
-            defaced_badge = '<span style="background:#7c3aed;color:#fff;padding:3px 8px;border-radius:10px;font-size:10px;font-weight:600;flex-shrink:0;">DEFACED</span>'
+            defaced_badge = _defaced_badge_html("padding:3px 8px;border-radius:10px;flex-shrink:0;")
 
         return f'''                {link_start}<div class="qc-thumb {status}" data-status="{status}" data-checks="{data_checks}" style="{link_style}">
                     {img_html}
@@ -589,7 +591,7 @@ class QuickCheckHTMLMixin:
 
         defaced_badge = ""
         if getattr(series, "_xnat_resource", None) == "DEFACED":
-            defaced_badge = '<span style="background:#7c3aed;color:#fff;padding:3px 8px;border-radius:10px;font-size:10px;font-weight:600;flex-shrink:0;">DEFACED</span>'
+            defaced_badge = _defaced_badge_html("padding:3px 8px;border-radius:10px;flex-shrink:0;")
 
         return f'''                {link_start}<div class="qc-thumb {status}" data-status="{status}" data-checks="{data_checks}" style="{link_style}">
                     <img src="{img_src}" alt="{escape(series.description or "", quote=True)}">
